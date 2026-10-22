@@ -49,6 +49,11 @@ export class HubClient {
     return this.call<AuthResponse>('POST', '/auth/login', { handle, password });
   }
 
+  /** Permanently deletes the signed-in account and everything it published. */
+  deleteAccount(password: string) {
+    return this.call<{ ok: boolean }>('DELETE', '/me', { password });
+  }
+
   logout() {
     return this.call<{ ok: boolean }>('POST', '/auth/logout');
   }

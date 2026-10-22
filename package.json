@@ -14,13 +14,22 @@
     "start": "npm run build:all && STATIC_DIR=dist npm run serve",
     "build:server": "vite build --ssr server/main.ts --outDir dist-server --emptyOutDir",
     "build:all": "npm run build && npm run build:server",
-    "serve": "node dist-server/main.js"
+    "serve": "node dist-server/main.js",
+    "android:sync": "npm run build && cap sync android",
+    "android:open": "cap open android",
+    "icons": "python3 scripts/make-icons.py"
   },
   "dependencies": {
+    "@capacitor/android": "8.5.3",
+    "@capacitor/app": "8.1.2",
+    "@capacitor/core": "8.5.3",
+    "@capacitor/filesystem": "8.1.5",
+    "@capacitor/share": "8.0.3",
     "pg": "^8.23.1",
     "three": "0.186.1"
   },
   "devDependencies": {
+    "@capacitor/cli": "8.5.3",
     "@types/node": "^22.20.5",
     "@types/pg": "^8.23.1",
     "@types/three": "0.186.0",

@@ -14,9 +14,10 @@ import type { EditorContext } from './context';
 import { checkbox, field, slider } from './forms';
 import { openPublishDialog, showHub } from './hub';
 import { clear, downloadText, h, pickFile, setChildren, slug, toast } from './dom';
-import { confirmDialog } from './overlay';
+import { confirmDialog, overlay } from './overlay';
 import { modelLibrary } from '../game/models';
 import { audio } from '../game/audio';
+import { isNative, setupBackButton } from '../native';
 import { dailyChallenge, dailyStreak, todayKey, type DailyRecord } from '../core/daily';
 import { getPreview } from './preview';
 import { charactersTab } from './tabs/characters';
@@ -50,9 +51,12 @@ export class App {
   constructor(private readonly root: HTMLElement, private readonly kv: KeyValueStore) {
     this.library = new UniverseLibrary(kv);
     this.settings = loadSettings(kv);
+    // Phones get the lighter look by default (glow can be turned on in Settings).
+    if (isNative() && !kv.getItem('of:settings')) this.settings.bloom = false;
   }
 
   start() {
+    void setupBackButton(() => this.handleBack());
     // Browsers only allow sound after the first interaction.
     const sfx = audio(this.settings.volume);
     const unlock = () => sfx.unlock();
@@ -63,6 +67,22 @@ export class App {
       if ((e.target as HTMLElement).closest?.('.btn, .chip, .tab, .mastery-opt, .legend-card, .mission-card, .roster-card')) sfx.play('ui');
     });
     this.showHome();
+  }
+
+  /** Android back button: close a dialog, pause the game, or go up a screen. False at the top (the app exits). */
+  private handleBack(): boolean {
+    const dialogClose = document.querySelector<HTMLButtonElement>('.overlay .overlay-head .icon-btn');
+    if (dialogClose) {
+      dialogClose.click();
+      return true;
+    }
+    if (this.session) return this.session.handleBack();
+    const up = document.querySelector<HTMLButtonElement>('.icon-btn[title="Back to multiverse"], .icon-btn[title="Back to your multiverse"]');
+    if (up) {
+      up.click();
+      return true;
+    }
+    return false;
   }
 
   private persistSettings() {
@@ -272,6 +292,10 @@ export class App {
         h('section', { class: 'library' },
           h('h2', { class: 'panel-title' }, 'Settings'),
           checkbox(() => this.settings.bloom, (v) => ((this.settings.bloom = v), this.persistSettings()), 'Glow effects (turn off on slower devices)'),
+          h('button', {
+            class: 'btn small',
+            onclick: () => overlay('Privacy policy', h('iframe', { class: 'policy-frame', src: 'privacy.html', title: 'Privacy policy' }), [], { wide: true }),
+          }, 'Privacy policy'),
           h('div', { class: 'grid-3' },
             ...(['master', 'music', 'sfx'] as const).map((k) => field(k === 'sfx' ? 'Effects volume' : k === 'music' ? 'Music volume' : 'Volume',
               slider(() => this.settings.volume[k], (v) => {

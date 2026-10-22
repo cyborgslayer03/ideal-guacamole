@@ -241,6 +241,15 @@ export function createHub(opts: HubOptions): Server {
 
     if (route === 'GET /me') return send(res, 200, toUser(await requireUser(req)));
 
+    // Account deletion (required by app stores): confirm with the password, then erase everything.
+    if (route === 'DELETE /me') {
+      const user = await requireUser(req);
+      const body = await readJson(req);
+      if (!(await verifyPassword(str(body, 'password'), user.passwordHash))) throw new HttpError(401, 'Wrong password.');
+      await store.removeUser(user.id);
+      return send(res, 200, { ok: true });
+    }
+
     if (route === 'GET /content') {
       const me = await viewer(req);
       const kind = url.searchParams.get('kind') as BundleKind | null;

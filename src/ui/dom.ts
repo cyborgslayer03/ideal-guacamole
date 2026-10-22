@@ -1,5 +1,7 @@
 // Tiny DOM builder so the UI stays dependency-free.
 
+import { isNative, shareFile } from '../native';
+
 export type Child = Node | string | number | null | undefined | false | Child[];
 
 type Props = {
@@ -74,6 +76,13 @@ function hostDownloads(): Promise<DownloadsApi | null> {
 
 /** Offers a file to the user: through the host's save prompt when there is one, else a normal download. */
 export async function saveFile(filename: string, data: Blob | string, type = 'application/octet-stream'): Promise<void> {
+  if (isNative()) {
+    // Android app: hand the file to the share sheet. Backing out of the sheet isn't an error.
+    await shareFile(filename, data).catch((e: unknown) => {
+      if (!/cancel/i.test(String((e as Error)?.message ?? e))) toast('Could not save the file.', 'error');
+    });
+    return;
+  }
   const api = await hostDownloads();
   if (api) {
     try {

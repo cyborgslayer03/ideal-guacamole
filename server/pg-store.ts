@@ -257,6 +257,15 @@ export class PgHubStore implements HubStore {
     );
   }
 
+  async removeUser(id: string) {
+    await this.tx(async (c) => {
+      // Like counts are stored on each listing; take this user's likes back out first.
+      await c.query('UPDATE content SET likes = likes - 1 WHERE id IN (SELECT content_id FROM likes WHERE user_id = $1)', [id]);
+      // Sessions, listings, likes, and reports cascade with the user.
+      await c.query('DELETE FROM users WHERE id = $1', [id]);
+    });
+  }
+
   async removeContent(id: string) {
     await this.pool.query('DELETE FROM content WHERE id = $1', [id]);
   }

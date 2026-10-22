@@ -87,6 +87,8 @@ export interface HubStore {
   incrementDownloads(id: string): Promise<number>;
   toggleLike(id: string, userId: string): Promise<{ liked: boolean; likes: number }>;
   addReport(id: string, userId: string): Promise<void>;
+  /** Deletes an account and everything tied to it: sessions, listings, likes, and reports. */
+  removeUser(id: string): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -267,6 +269,18 @@ export class FileHubStore implements HubStore {
       c.reportedBy.push(userId);
       this.flush();
     }
+  }
+
+  async removeUser(id: string) {
+    for (const c of this.data.content.filter((x) => x.authorId === id)) rmSync(this.bundlePath(c.id), { force: true });
+    this.data.content = this.data.content.filter((c) => c.authorId !== id);
+    for (const c of this.data.content) {
+      c.likedBy = c.likedBy.filter((x) => x !== id);
+      c.reportedBy = c.reportedBy.filter((x) => x !== id);
+    }
+    this.data.sessions = this.data.sessions.filter((s) => s.userId !== id);
+    this.data.users = this.data.users.filter((u) => u.id !== id);
+    this.flush();
   }
 
   async close() {}

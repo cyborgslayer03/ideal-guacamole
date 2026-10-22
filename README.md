@@ -281,6 +281,10 @@ Plans: the Blueprint uses Render's free tiers. Free web services sleep when idle
 - Passwords are hashed with scrypt, and session tokens are random and stored only as SHA-256 hashes. Request bodies are capped at 2 MB, and requests are rate-limited per IP, with tighter limits on writes.
 - `src/online/protocol.ts` is the API contract shared by `src/online/client.ts` and the server.
 
+## Android app
+
+The game also ships as a native Android app (Capacitor) for Google Play. The native project is in `android/`, and GitHub Actions builds a test APK and a Play-ready app bundle on every push. Setup, signing, and the Play Console steps (store listing, data safety, content rating) are in **[docs/ANDROID.md](docs/ANDROID.md)**. Listing text and art are in `store/`.
+
 ## Sharing
 
 Universes, characters, items and stories export as `.json` bundles. A story bundle carries every character, location, item and faction it uses. Imports are validated and sanitized (`src/core/validate.ts`) and get fresh ids, so content from other players can never collide with or corrupt yours. The Multiverse Hub uploads and downloads this same bundle format.

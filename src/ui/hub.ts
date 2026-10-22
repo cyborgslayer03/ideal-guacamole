@@ -9,6 +9,7 @@ import { normalizeTags, type ContentDetail, type ContentSummary, type ListQuery,
 import { clear, h, setChildren, toast } from './dom';
 import { capitalize } from './forms';
 import { overlay } from './overlay';
+import { BUILT_IN_HUB_URL } from '../native';
 
 export interface HubDeps {
   root: HTMLElement;
@@ -29,7 +30,7 @@ const KIND_COLORS: Record<BundleKind, string> = {
 const KIND_LABELS: Record<BundleKind, string> = { universe: 'Universe', character: 'Character', story: 'Story', item: 'Item' };
 
 export function hubClient(settings: Settings): HubClient {
-  return new HubClient(settings.hubUrl.trim() || './api', () => settings.hubToken || null);
+  return new HubClient(settings.hubUrl.trim() || BUILT_IN_HUB_URL || './api', () => settings.hubToken || null);
 }
 
 function persist(deps: Pick<HubDeps, 'kv' | 'settings'>) {
@@ -98,6 +99,31 @@ export function showHub(deps: HubDeps) {
           void load();
         },
       }, 'Sign out'),
+      deps.settings.hubHandle && h('button', {
+        class: 'btn small danger',
+        onclick: () => {
+          const pw = h('input', { type: 'password', placeholder: 'Password', autocomplete: 'current-password' });
+          overlay('Delete account', h('div', null,
+            h('p', null, `This permanently deletes @${deps.settings.hubHandle}, everything you've published, and your likes and reports. Your universes on this device are not affected.`),
+            h('label', { class: 'field' }, h('span', { class: 'field-label' }, 'Confirm with your password'), pw),
+          ), [
+            { label: 'Cancel', onClick: () => {} },
+            {
+              label: 'Delete forever',
+              danger: true,
+              onClick: async () => {
+                await client.deleteAccount(pw.value);
+                signOutLocally(deps);
+                state.mine = false;
+                toast('Your account was deleted.');
+                renderAccount();
+                renderKinds();
+                void load();
+              },
+            },
+          ]);
+        },
+      }, 'Delete account'),
     );
   };
 

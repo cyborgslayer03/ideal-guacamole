@@ -95,6 +95,26 @@ describe('accounts', () => {
     expect((await me.me()).handle).toBe('StarForger');
   });
 
+  it('deletes an account with its listings, likes, and sessions', async () => {
+    const quitter = await signedIn('Quitter');
+    const fan = await signedIn('Admirer');
+    const theirs = await quitter.publish({ bundle: bundleUniverse(generateUniverse(31)), description: 'soon gone', tags: [] });
+    const kept = await fan.publish({ bundle: bundleUniverse(generateUniverse(32)), description: 'stays', tags: [] });
+    await quitter.like(kept.id);
+    expect((await fan.get(kept.id)).likes).toBe(1);
+
+    expect(await status(quitter.deleteAccount('wrong-password'))).toBe(401);
+    expect(await status(client().c.deleteAccount('correct-horse'))).toBe(401);
+    await quitter.deleteAccount('correct-horse');
+
+    expect(await status(quitter.me())).toBe(401);
+    expect(await status(client().c.get(theirs.id))).toBe(404);
+    expect((await fan.get(kept.id)).likes).toBe(0);
+    expect(await status(client().c.login('Quitter', 'correct-horse'))).toBe(401);
+    // The handle is free again.
+    expect(await status(client().c.register('Quitter', 'new-password-1'))).toBe(200);
+  });
+
   it('logging out invalidates the token', async () => {
     const c = await signedIn('Leaver');
     await c.logout();

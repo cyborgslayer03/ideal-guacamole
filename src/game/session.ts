@@ -1266,6 +1266,13 @@ export class GameSession {
 
   // --- Loop ----------------------------------------------------------------
 
+  /** Android back button: leave photo mode, close the pause menu, or pause. Always handled. */
+  handleBack(): boolean {
+    if (this.photo) this.togglePhoto();
+    else if (!this.run?.done) this.togglePause();
+    return true;
+  }
+
   private togglePause() {
     const s = this.stage;
     if (!s || this.run?.done) return;

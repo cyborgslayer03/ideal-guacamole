@@ -681,7 +681,7 @@ export class Combat {
       a.faceToward(target.pos);
       const gap = target.pos.distanceTo(a.pos) - target.radius - a.radius;
       if (gap > 0.6) {
-        // Lunge toward the target, MFR-style soft lock.
+        // Lunge toward the target, action-RPG soft lock.
         const lunge = Math.min(gap - 0.4, 3.5) / ATTACK_TIME;
         const dir = a.forward();
         a.vel.x = dir.x * lunge;
