@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { createCampaign, missionBoard, resolveMission } from '../src/core/campaign';
 import { LEGENDS, legendCharacter, legendsUniverse } from '../src/core/roster';
 import { SKILL_SLOTS } from '../src/core/rules';
-import { MOVEMENT_KINDS, isMovement } from '../src/core/types';
+import { MOVEMENT_KINDS, isMovement, isTravel, takesSkillSlot } from '../src/core/types';
 import { normalizeCharacter, normalizeUniverse } from '../src/core/validate';
 
 describe('legends roster', () => {
@@ -17,11 +17,11 @@ describe('legends roster', () => {
       const c = legendCharacter(spec);
       expect(normalizeCharacter(c)).toEqual(c);
       expect(c.powers.some((p) => isMovement(p.kind)), spec.alias).toBe(true);
-      const active = c.powers.filter((p) => !isMovement(p.kind));
+      const active = c.powers.filter((p) => takesSkillSlot(p.kind));
       expect(active.length).toBeGreaterThanOrEqual(3);
       expect(active.length).toBeLessThanOrEqual(SKILL_SLOTS);
       // At most one power on the travel button.
-      expect(c.powers.filter((p) => ['flight', 'teleport', 'leap'].includes(p.kind)).length).toBeLessThanOrEqual(1);
+      expect(c.powers.filter((p) => isTravel(p.kind)).length).toBeLessThanOrEqual(1);
     }
   });
 

@@ -19,7 +19,7 @@ npm run build      # typecheck + production build into dist/
 - **Legends Universe:** start with twelve hand-made heroes and villains (see below), their two factions, four locations, signature gear, and the branching story *Legends Assemble*.
 - **Instant Universe:** one click rolls factions, heroes, villains, locations, gear and a three-chapter story.
 - **Quick / Full detail toggle:** Quick shows the essentials plus 🎲 randomizers for every piece. Full detail adds backstories, secret identities, custom palettes, power descriptions and dialogue writing.
-- **Characters:** a live 3D preview with costume colors, build, head style, emblem, cape and aura. Six attributes with archetype presets, up to 4 active powers plus movement powers, 4 gear slots, and a CP (combat power) rating.
+- **Characters:** a live 3D preview with costume colors, build, head style, emblem, cape and aura, or an imported 3D model. Six attributes with archetype presets, up to 4 active powers (27 power types) plus movement powers and passives, 4 gear slots, and a CP (combat power) rating.
 - **Powers:** 6 attack and support types (blast, beam, nova, dash, shield, heal) and 4 movement types (flight, teleport, super speed, super leap), across 10 elements. Each element has its own effect: fire burns, ice slows, lightning and psychic stun, shadow and nature drain life, cosmic and tech amplify damage, kinetic knocks back, and energy refunds energy.
 - **Stories:** chapters with a location, enemy faction, objective (defeat N, survive, or boss fight against any character), enemy level, reward item, and intro/outro dialogue.
 - **Laws of reality:** universe-wide power scale, gravity and enemy density, with per-location **local laws** that override them (the Legends' orbital station runs at 0.35× gravity).
@@ -33,20 +33,57 @@ Movement powers sit on **V** (or the travel button on touch) and never take a Q/
 | **Teleport** | Blink to your target (or 9–17 m the way you're steering), shocking enemies where you land. Short cooldown. |
 | **Super Leap** | A huge arcing jump onto your target that slams down in an area on landing. |
 | **Super Speed** | Always on: run up to 75% faster, leaving afterimages. Stacks with any of the others. |
+| **Web Swing** | Shoot a line to an anchor overhead and swing toward your target or onto rooftops. Works mid-air, so swings chain. |
 
 Bosses and AI companions use them too. Teleporting villains blink in beside you, and leapers crash down from across the arena.
+
+### Power types
+Besides blasts, beams, novas, dashes, shields and heals, characters can have powers inspired by the classic comic-book archetypes:
+
+| Power | What it does |
+| --- | --- |
+| **Optic Blast** | Instant piercing twin eye-beams with knockback. |
+| **Web Shot** | A sticky shot that roots and slows its target. |
+| **Telekinesis** | Lifts a minion into the air, then slams it down. Bosses and brutes are too heavy, so they're crushed in place. |
+| **Reality Warp** | Shrinks the target (half damage dealt, more taken), or rewrites a minion onto your side. |
+| **Mind Control** | A minion fights for you for a while. Bosses and heroes resist and are only stunned. |
+| **Summon Echoes** | Up to 3 ghostly duplicates of you fight alongside you, then fade. |
+| **Life Drain** | A short-range channel that heals you for part of the damage. |
+| **Gravity Well** | A well that drags enemies in and crushes them for 3 seconds. |
+| **Storm Call** | Lightning strikes on enemies around you. |
+| **Time Stop** | Freezes nearby enemies completely; bosses only briefly. |
+| **Phasing** | Become intangible: attacks pass through you. |
+| **Sonic Scream** | A cone that stuns and blows enemies away. |
+| **Giant Growth** | Grow 60%: hit 50% harder, take 25% less, no knockback. |
+| **Stealth** | Turn invisible: enemies lose track of you, and your next hit lands double. |
+| **Stretch Grab** | Yank a minion to you, or pull yourself to a boss. |
+| **Healing Factor** | Passive (no slot): regenerate whenever you avoid damage for a few seconds. |
+
+AI bosses, companions, and enemies use all of them, and only when they make sense (no Time Stop with nobody nearby).
 
 ### Legends roster
 | Heroes | Movement | Villains | Movement |
 | --- | --- | --- | --- |
 | **Aegis Prime**: shield tank | Super Leap | **Overlord Kryos**: ice tyrant | Flight |
-| **Voltstream**: lightning speedster | Super Speed | **Hexmother**: void sorceress | Teleport |
-| **Seraph**: solar flier and healer | Flight | **Juggernox**: unstoppable brute | Super Leap |
-| **Nightveil**: shadow assassin | Teleport | **Blitzkrieg**: fire speedster | Super Speed + Leap |
-| **Mindwarden**: psychic controller | Teleport | **Doctor Paradox**: chrono-scientist | Teleport |
-| **Ironclad Ranger**: armored inventor | Flight | **Venomancer**: toxic predator | Super Leap + Speed |
+| **Voltstream**: lightning speedster with Storm Call | Super Speed | **Hexmother**: void sorceress with Reality Warp | Teleport |
+| **Seraph**: solar flier with Optic Blast, and a healer | Flight | **Juggernox**: brute with Giant Growth and Healing Factor | Super Leap |
+| **Nightveil**: shadow assassin with Stealth | Teleport | **Blitzkrieg**: fire speedster with Sonic Scream | Super Speed + Leap |
+| **Mindwarden**: Telekinesis and Mind Control | Teleport | **Doctor Paradox**: chrono-scientist with Time Stop | Teleport |
+| **Silkstrider**: web-slinger with Web Shot and Stretch Grab | Web Swing | **Venomancer**: toxic predator with Venom Web | Web Swing + Speed |
+| **Ironclad Ranger**: armored inventor with Summon drones | Flight | | |
 
 Add any of them to any universe with **★ Legends** in the Characters tab. Every legend is fully editable once added.
+
+### 3D models (Mixamo, Quaternius, any glTF/FBX)
+Any character can swap the procedural body for a rigged 3D model in the **3D model** section of the Characters tab:
+
+- **Built in:** the CC0 Quaternius robot (`public/models/robot.glb`, credits in `public/models/CREDITS.md`).
+- **Import** a `.glb`, `.gltf` (embedded) or `.fbx` file. Files are stored in your browser's IndexedDB, up to 60 MB each.
+- **From link:** any `https://` URL to a model on a server that allows cross-origin downloads.
+
+Animation clips are matched to actions automatically by name (Idle, Walk, Run, Jump, Fly, Attack, Power, Hurt, Death), and you can override each one. **Quaternius** packs already include these clips. For **Mixamo**, download the character as FBX "With Skin", then download each animation as FBX "Without Skin" with "In Place" checked, and import it next to the action it should play. Mixamo bone names (`mixamorig:Hips`, `mixamorigHips`, ...) are matched for you, and root motion is stripped so animations play in place. Size, facing and an optional costume-color tint are adjustable. Models load before a mission starts, and if one can't load, the character uses the procedural body instead.
+
+Characters exported or shared through the hub keep built-in and linked models. Imported files stay on the device that imported them.
 
 ### Story mode (action RPG)
 - 4-hit melee combo with soft-lock lunge, dodge with i-frames, double jump, movement powers, 4 power skills, and an ultimate that charges as you deal damage.
@@ -121,7 +158,7 @@ Free play, layered:
 | Jump / double jump | Space | ⤒ |
 | Powers | Q E R F (or 1–4) | Skill buttons |
 | Ultimate | X | ★ |
-| Movement power (fly / teleport / leap) | V (Space/C rise/fall when flying) | Travel button |
+| Movement power (fly / teleport / leap / swing) | V (Space/C rise/fall when flying) | Travel button |
 | Switch hero (squad) | Tab | Tap a teammate |
 | Squad order | G | Tap the order badge |
 | Team Assault | T | ⚡ |
@@ -177,7 +214,8 @@ Universes, characters, items and stories export as `.json` bundles. A story bund
 ```
 src/core/   Pure game data and logic: types, rules/balance, generator, validation, storage, sharing,
             campaign (War Table, factions, relationships), mission plans
-src/game/   Three.js runtime: models, arenas, combat, AI, effects, HUD, input, session loop
+src/game/   Three.js runtime: procedural and imported models (glTF/FBX loader, IndexedDB asset store),
+            arenas, combat, AI, effects, HUD, input, session loop
 src/online/ Multiverse Hub API contract and browser client
 src/ui/     Creator UI: home/library, editor shell, tabs, forms, 3D preview, hub screens
 server/     Multiverse Hub server (node:http, file storage)
@@ -191,5 +229,5 @@ tests/      Vitest: core logic, campaign rules and fuzzing, and a headless comba
 - **Hub, next steps:** comments, follows and creator profiles, remix credits, moderator tools, and cloud sync of your own library.
 - Cutscene camera moves, voiced barks, and companion banter based on relationships.
 - More enemy archetypes, elite modifiers, co-op heroes and team-up attacks.
-- Imported 3D models and animations (glTF/GLB) alongside the procedural ones.
+- Uploading imported model files to the hub so shared characters keep their look everywhere.
 - Packaging as an installable mobile/desktop app (PWA or Capacitor/Tauri).

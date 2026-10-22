@@ -4,16 +4,16 @@
 import * as THREE from 'three';
 import {
   ELEMENT_COLORS, basicDamage, leapSlamRadius, maxEnergy, maxHealth, moveSpeed, powerCooldown, powerCost, powerDamage,
-  rollDamage, energyRegen, speedMultiplier, teleportRange,
+  regenRate, rollDamage, energyRegen, speedMultiplier, teleportRange,
 } from '../core/rules';
-import { isMovement, type Appearance, type Character, type Element, type Power, type Stats } from '../core/types';
+import { isTravel, takesSkillSlot, type Appearance, type Character, type Element, type Power, type Stats } from '../core/types';
 import { ARENA_RADIUS, THIN, floorAt, type Obstacle } from './arena';
 import type { Effects } from './effects';
 import { idleAnim, type AnimState, type HeroModel } from './model';
 import { createHeroModel } from './models';
 
 export type Team = 'player' | 'enemy';
-export type Archetype = 'hero' | 'ally' | 'grunt' | 'gunner' | 'brute' | 'boss';
+export type Archetype = 'hero' | 'ally' | 'grunt' | 'gunner' | 'brute' | 'boss' | 'summon';
 export type SquadRole = 'tank' | 'striker' | 'ranged' | 'support';
 
 /** Seconds a downed hero can wait for a revive. */
@@ -104,16 +104,45 @@ export class Actor {
   /** AI teammates: the role they play and the enemy they're on. */
   squadRole: SquadRole | null = null;
   aiTarget: Actor | null = null;
+
+  // Status effects from the wider power set (seconds remaining).
+  /** Webbed: can act but not move. */
+  root = 0;
+  /** Time-stopped: completely frozen in place. */
+  frozen = 0;
+  /** Held in the air by telekinesis. */
+  lift = 0;
+  liftHeight = 0;
+  /** Mind-controlled: fighting for the other team until it wears off. */
+  charm = 0;
+  /** Reality-warped: shrunken, dealing half damage and taking more. */
+  shrink = 0;
+  /** Giant Growth: bigger, hits harder, shrugs off knockback. */
+  growth = 0;
+  /** Phasing: intangible. */
+  phase = 0;
+  /** Invisible: enemies can't target it; the next hit lands double. */
+  stealth = 0;
+  /** Summoned echoes fade away when this runs out. */
+  summoned = false;
+  life = 0;
+  /** Healing Factor: fraction of max health regained per second out of danger. */
+  readonly regenFactor: number;
+  /** The team this actor started on (mind control can change `team`). */
+  readonly homeTeam: Team;
+  readonly baseScale: number;
+  private opacity = 1;
   private trailTimer = 0;
 
   constructor(
     readonly name: string,
-    readonly team: Team,
+    /** Mutable for mind control; see homeTeam. */
+    public team: Team,
     /** Mutable so control can pass between squad members (tag-switching). */
     public archetype: Archetype,
     readonly stats: Stats,
     public level: number,
-    appearance: Appearance,
+    readonly appearance: Appearance,
     powers: Power[],
     healthOverride?: number,
     readonly character?: Character,
@@ -123,14 +152,17 @@ export class Actor {
     this.maxEnergy = this.energy = maxEnergy(stats);
     const sizeBonus = archetype === 'brute' ? 1.4 : archetype === 'boss' ? 1.25 : 1;
     this.model.root.scale.setScalar(sizeBonus);
+    this.baseScale = sizeBonus;
+    this.homeTeam = team;
+    this.regenFactor = regenRate(powers);
     this.radius = 0.55 * appearance.height * sizeBonus;
     this.speedMult = speedMultiplier(powers);
     this.speed = moveSpeed(stats) * this.speedMult * (archetype === 'brute' ? 0.6 : archetype === 'hero' || archetype === 'ally' ? 1 : 0.7);
     this.canFly = powers.some((p) => p.kind === 'flight');
-    this.travel = powers.find((p) => p.kind === 'flight' || p.kind === 'teleport' || p.kind === 'leap') ?? null;
+    this.travel = powers.find((p) => isTravel(p.kind)) ?? null;
     this.travelCooldown = this.travel ? powerCooldown(this.travel, stats) : 0;
     this.skills = powers
-      .filter((p) => !isMovement(p.kind))
+      .filter((p) => takesSkillSlot(p.kind))
       .slice(0, 4)
       .map((p) => ({ power: p, cooldown: powerCooldown(p, stats), remaining: 0, cost: powerCost(p) }));
   }
@@ -144,8 +176,15 @@ export class Actor {
     return true;
   }
 
+  /** Sets model transparency only when it changes (materials are shared per model). */
+  setOpacity(alpha: number) {
+    if (Math.abs(alpha - this.opacity) < 0.01) return;
+    this.opacity = alpha;
+    this.model.setOpacity(alpha);
+  }
+
   get busy(): boolean {
-    return this.stun > 0 || this.castTimer > 0 || this.dodgeTimer > 0 || this.dashHits !== null;
+    return this.stun > 0 || this.frozen > 0 || this.castTimer > 0 || this.dodgeTimer > 0 || this.dashHits !== null;
   }
 
   get center(): THREE.Vector3 {
@@ -180,6 +219,8 @@ interface Projectile {
   life: number;
   radius: number;
   aoe: number;
+  /** Web shots root whatever they hit. */
+  web?: number;
 }
 
 interface Channel {
@@ -188,6 +229,19 @@ interface Channel {
   remaining: number;
   tick: number;
   damage: number;
+  /** Life Drain: short range, heals the caster. */
+  drain?: boolean;
+}
+
+/** A lingering area effect (Gravity Well). */
+interface Zone {
+  owner: Actor;
+  pos: THREE.Vector3;
+  radius: number;
+  life: number;
+  tick: number;
+  damage: number;
+  element: Element;
 }
 
 const projectileGeo = new THREE.SphereGeometry(1, 10, 8);
@@ -199,6 +253,7 @@ export class Combat {
   readonly actors: Actor[] = [];
   private projectiles: Projectile[] = [];
   private channels: Channel[] = [];
+  private zones: Zone[] = [];
   /** Delayed actions in simulation time, so pausing and slow-mo stay in sync. */
   private timers: { at: number; fn: () => void }[] = [];
   private clock = 0;
@@ -231,8 +286,9 @@ export class Combat {
     actor.model.dispose();
   }
 
+  /** Living actors on the other team. Stealthed actors can't be seen, so they're left out. */
   enemiesOf(actor: Actor): Actor[] {
-    return this.actors.filter((a) => a.alive && a.team !== actor.team);
+    return this.actors.filter((a) => a.alive && a.team !== actor.team && a.stealth <= 0);
   }
 
   /** Nearest enemy within range, preferring ones in front of the actor. */
@@ -277,8 +333,8 @@ export class Combat {
       this.toggleFlight(a);
       return true;
     }
-    if (a.travelRemaining > 0 || a.castTimer > 0) return false;
-    const ok = p.kind === 'teleport' ? this.teleport(a, p, preferred) : this.superLeap(a, p, preferred);
+    if (a.travelRemaining > 0 || a.castTimer > 0 || a.root > 0) return false;
+    const ok = p.kind === 'teleport' ? this.teleport(a, p, preferred) : p.kind === 'swing' ? this.swing(a, p, preferred) : this.superLeap(a, p, preferred);
     if (ok) a.travelRemaining = a.travelCooldown;
     return ok;
   }
@@ -353,10 +409,41 @@ export class Combat {
     return true;
   }
 
+  /**
+   * Web Swing: shoot a line to an anchor high above and swing in an arc toward
+   * the target (or the way you're heading). Works mid-air, so swings chain.
+   */
+  private swing(a: Actor, p: Power, preferred: Actor | null): boolean {
+    if (a.flying) return false;
+    const target = a.ai.flee ? null : preferred ? (preferred.pos.distanceTo(a.pos) <= 28 ? preferred : null) : this.findTarget(a, 28);
+    const dir = a.moveIntent.lengthSq() > 0.01 && (a.archetype === 'hero' || !target) ? a.moveIntent.clone().setY(0).normalize() : a.forward();
+    const dest = target
+      ? target.pos.clone().addScaledVector(a.pos.clone().sub(target.pos).setY(0).normalize(), target.radius + a.radius + 1.5)
+      : a.pos.clone().addScaledVector(dir, 18);
+    // Prefer landing up on rooftops and platforms along the way.
+    dest.y = this.floorAt(dest.x, dest.z, Math.max(a.pos.y, dest.y) + 6);
+    this.keepInBounds(dest, a.radius);
+    a.faceToward(dest);
+    const anchor = a.pos.clone().lerp(dest, 0.55).setY(Math.max(a.pos.y, dest.y) + 12);
+    const g = GRAVITY * this.gravityScale;
+    const t = 0.85;
+    a.vel.x = (dest.x - a.pos.x) / t;
+    a.vel.z = (dest.z - a.pos.z) / t;
+    a.vel.y = (dest.y - a.pos.y + (g * t * t) / 2) / t;
+    a.grounded = false;
+    a.jumps = 1; // a double jump is still available after a swing
+    a.attackTimer = 0;
+    a.leap = { damage: 0, element: p.element, radius: 0 };
+    const color = ELEMENT_COLORS[p.element];
+    for (let i = 0; i < 4; i++) this.schedule(i * 0.12, () => a.alive && this.fx.beam(a.center, anchor, '#f4f4ff', 0.04, 0.14));
+    this.fx.burst(anchor, color, 6, 2, 0.1);
+    return true;
+  }
+
   private landLeap(a: Actor) {
     const slam = a.leap;
     a.leap = null;
-    if (!slam || !a.alive) return;
+    if (!slam || !a.alive || slam.damage <= 0) return;
     const color = ELEMENT_COLORS[slam.element];
     this.fx.ring(a.pos, color, slam.radius * 1.15, 0.5);
     this.fx.flare(a.pos.clone().setY(0.6), color, slam.radius * 0.6, 0.3);
@@ -546,11 +633,259 @@ export class Combat {
         this.fx.ring(a.pos, color, 8);
         break;
       }
-      case 'flight':
-        break;
+      default:
+        this.castExotic(a, p, dmg, target, fwd);
     }
     a.anim.cast = a.castTimer > 0 ? 0 : -1;
     return true;
+  }
+
+  /** The wider power set: web, optic, telekinesis, reality, mind control, and the rest. */
+  private castExotic(a: Actor, p: Power, dmg: number, target: Actor | null, fwd: THREE.Vector3) {
+    const color = ELEMENT_COLORS[p.element];
+    const inRange = (r: number) => (target && target.pos.distanceTo(a.pos) <= r ? target : null);
+    const boss = (t: Actor) => t.archetype === 'boss';
+    switch (p.kind) {
+      case 'optic': {
+        // Instant piercing twin beams from the eyes.
+        a.castTimer = 0.3;
+        const from = a.center.add(new THREE.Vector3(0, 0.45 * a.model.root.scale.y, 0)).addScaledVector(fwd, 0.4);
+        const dir = fwd.clone();
+        if (target) dir.y = (target.center.y - from.y) / Math.max(1, target.pos.distanceTo(a.pos));
+        dir.normalize();
+        const to = from.clone().addScaledVector(dir, 28);
+        const side = new THREE.Vector3(fwd.z, 0, -fwd.x).multiplyScalar(0.09);
+        this.fx.beam(from.clone().add(side), to.clone().add(side), color, 0.12, 0.25);
+        this.fx.beam(from.clone().sub(side), to.clone().sub(side), color, 0.12, 0.25);
+        const seg = new THREE.Line3(from, to);
+        const closest = new THREE.Vector3();
+        for (const e of this.enemiesOf(a)) {
+          seg.closestPointToPoint(e.center, true, closest);
+          if (closest.distanceTo(e.center) <= e.radius + 0.5) {
+            this.damage(e, dmg, a, p.element, 9);
+            this.fx.burst(e.center, color, 8, 6);
+          }
+        }
+        break;
+      }
+      case 'web': {
+        a.castTimer = 0.25;
+        const dir = fwd.clone();
+        if (target) dir.y = target.center.sub(a.center).normalize().y;
+        this.fireProjectile(a, dir, dmg, p.element, 30, 0.3, 1.5, 2 + p.potency * 0.2);
+        break;
+      }
+      case 'telekinesis': {
+        const t = inRange(24);
+        a.castTimer = 0.5;
+        if (!t) break;
+        this.fx.beam(a.center, t.center, color, 0.08, 0.5);
+        if (boss(t) || t.archetype === 'brute') {
+          // Too heavy to lift: crush in place.
+          t.stun = Math.max(t.stun, 0.4);
+          this.damage(t, dmg, a, p.element, 0);
+          this.fx.ring(t.pos, color, 2.5);
+          break;
+        }
+        t.lift = 1;
+        t.liftHeight = t.pos.y + 3.5;
+        t.stun = Math.max(t.stun, 1.6);
+        this.fx.ring(t.pos, color, 2);
+        this.schedule(1, () => {
+          t.lift = 0;
+          t.vel.set(0, -32, 0);
+          this.schedule(0.15, () => {
+            this.damage(t, dmg, a, p.element, 4);
+            this.fx.ring(t.pos, color, 3);
+            this.fx.burst(t.pos.clone().setY(t.pos.y + 0.3), '#d8c8b0', 14, 8);
+            this.fx.shake(0.25);
+          });
+        });
+        break;
+      }
+      case 'reality': {
+        const t = inRange(24);
+        a.castTimer = 0.45;
+        if (!t) break;
+        this.fx.flare(t.center, color, 2.5, 0.4);
+        this.fx.ring(t.pos, '#ffffff', 3, 0.5);
+        this.fx.burst(t.center, color, 24, 8, 0.16);
+        this.damage(t, dmg, a, p.element, 0);
+        if (!t.alive) break;
+        // Minions sometimes get rewritten onto your side; everyone else shrinks.
+        if (!boss(t) && t.archetype !== 'summon' && Math.random() < 0.3 + p.potency * 0.03) this.charm(t, a, 5 + p.potency * 0.4);
+        else t.shrink = boss(t) ? 3 + p.potency * 0.2 : 6 + p.potency * 0.4;
+        break;
+      }
+      case 'mindcontrol': {
+        const t = inRange(22);
+        a.castTimer = 0.5;
+        if (!t) break;
+        this.fx.beam(a.center.add(new THREE.Vector3(0, 0.4, 0)), t.center, color, 0.06, 0.6);
+        this.damage(t, dmg, a, p.element, 0);
+        if (!t.alive) break;
+        // Bosses and heroes resist: they're only stunned.
+        if (boss(t) || t.archetype === 'hero' || t.archetype === 'ally') t.stun = Math.max(t.stun, boss(t) ? 1 : 1.2);
+        else this.charm(t, a, 6 + p.potency * 0.6);
+        break;
+      }
+      case 'summon': {
+        a.castTimer = 0.5;
+        const count = Math.min(3, 1 + Math.floor(p.potency / 4));
+        this.fx.flare(a.center, color, 3, 0.4);
+        for (let i = 0; i < count; i++) {
+          const angle = a.facing + Math.PI + (i - (count - 1) / 2) * 1.1;
+          const at = a.pos.clone().add(new THREE.Vector3(Math.sin(angle) * 2.2, 0, Math.cos(angle) * 2.2));
+          this.keepInBounds(at, a.radius);
+          this.summon(a, at, 8 + p.potency * 0.6);
+        }
+        break;
+      }
+      case 'drain':
+        a.castTimer = 1.5;
+        this.channels.push({ actor: a, power: p, remaining: 1.5, tick: 0, damage: dmg, drain: true });
+        break;
+      case 'gravity': {
+        a.castTimer = 0.4;
+        const at = target && target.pos.distanceTo(a.pos) < 22 ? target.pos.clone() : a.pos.clone().addScaledVector(fwd, 9);
+        at.y = this.floorAt(at.x, at.z, at.y + 1);
+        this.zones.push({ owner: a, pos: at, radius: 4 + p.potency * 0.35, life: 3, tick: 0, damage: dmg, element: p.element });
+        this.fx.flare(at.clone().setY(at.y + 1), '#120a24', 2, 0.5);
+        break;
+      }
+      case 'storm': {
+        a.castTimer = 0.5;
+        const strikes = 3 + Math.floor(p.potency / 3);
+        this.fx.flare(a.center.add(new THREE.Vector3(0, 2, 0)), color, 2, 0.4);
+        for (let i = 0; i < strikes; i++) {
+          this.schedule(0.2 + i * 0.3, () => {
+            if (!a.alive) return;
+            const foes = this.enemiesOf(a).filter((e) => e.pos.distanceTo(a.pos) < 22);
+            const victim = foes[Math.floor(Math.random() * foes.length)];
+            const at = victim ? victim.pos.clone() : a.pos.clone().add(new THREE.Vector3(Math.random() * 16 - 8, 0, Math.random() * 16 - 8));
+            this.fx.beam(at.clone().setY(at.y + 22), at, color, 0.25, 0.2);
+            this.fx.flare(at.clone().setY(at.y + 0.5), color, 2.2, 0.2);
+            this.fx.ring(at, color, 2.6, 0.3);
+            for (const e of this.enemiesOf(a)) {
+              if (e.pos.distanceTo(at) <= 2.4 + e.radius) this.damage(e, dmg, a, p.element, 3);
+            }
+          });
+        }
+        break;
+      }
+      case 'timestop': {
+        a.castTimer = 0.4;
+        const radius = 10 + p.potency * 0.5;
+        this.fx.flare(a.center, '#dff4ff', radius * 0.5, 0.5);
+        this.fx.ring(a.pos, color, radius, 0.7);
+        this.fx.ring(a.pos, '#ffffff', radius * 0.6, 0.5);
+        for (const e of this.enemiesOf(a)) {
+          if (e.pos.distanceTo(a.pos) > radius + e.radius) continue;
+          const time = boss(e) ? 0.8 + p.potency * 0.05 : 2 + p.potency * 0.2;
+          e.frozen = Math.max(e.frozen, time);
+          e.stun = Math.max(e.stun, time);
+          this.damage(e, dmg, a, p.element, 0);
+        }
+        break;
+      }
+      case 'phase':
+        a.castTimer = 0.15;
+        a.phase = 2 + p.potency * 0.25;
+        a.invuln = Math.max(a.invuln, a.phase);
+        this.fx.burst(a.center, color, 14, 4, 0.12);
+        break;
+      case 'sonic': {
+        a.castTimer = 0.4;
+        const range = 9 + p.potency * 0.3;
+        for (let i = 1; i <= 3; i++) {
+          this.schedule(i * 0.06, () => this.fx.ring(a.pos.clone().addScaledVector(a.forward(), i * range * 0.28).setY(a.pos.y + 1.2), color, 1 + i * 0.9, 0.3));
+        }
+        for (const e of this.enemiesOf(a)) {
+          const to = e.pos.clone().sub(a.pos).setY(0);
+          const d = to.length();
+          if (d > range + e.radius || (d > 1 && to.normalize().dot(fwd) < 0.5)) continue;
+          e.stun = Math.max(e.stun, boss(e) ? 0.2 : 0.8);
+          this.damage(e, dmg, a, p.element, 14);
+        }
+        this.fx.shake(0.2);
+        break;
+      }
+      case 'grow':
+        a.castTimer = 0.5;
+        a.growth = 8 + p.potency * 0.5;
+        this.fx.ring(a.pos, color, 4, 0.6);
+        this.fx.burst(a.center, color, 20, 6);
+        this.fx.shake(0.3);
+        break;
+      case 'stealth':
+        a.castTimer = 0.15;
+        a.stealth = 5 + p.potency * 0.4;
+        for (const e of this.actors) if (e.aiTarget === a) e.aiTarget = null;
+        this.fx.burst(a.center, '#1a1a2a', 16, 4, 0.16);
+        break;
+      case 'stretch': {
+        const t = inRange(15);
+        a.castTimer = 0.35;
+        if (!t) break;
+        this.fx.beam(a.center, t.center, a.appearance.primary, 0.14, 0.35);
+        if (boss(t) || t.archetype === 'brute') {
+          // Too big to pull: yank yourself in instead.
+          const dir = t.pos.clone().sub(a.pos).setY(0);
+          const gap = Math.max(0, dir.length() - t.radius - a.radius - 0.6);
+          dir.normalize();
+          a.vel.x = dir.x * gap / 0.25;
+          a.vel.z = dir.z * gap / 0.25;
+          a.ai.dashTime = 0.25;
+          a.dashHits = new Set();
+          a.dashDamage = dmg;
+          a.dashPower = p;
+          a.invuln = Math.max(a.invuln, 0.3);
+          break;
+        }
+        const dir = a.pos.clone().sub(t.pos).setY(0);
+        const gap = Math.max(0, dir.length() - t.radius - a.radius - 0.4);
+        dir.normalize();
+        t.vel.x = dir.x * gap / 0.25;
+        t.vel.z = dir.z * gap / 0.25;
+        // A forced slide, like a dodge: no ground friction until it lands in front of us.
+        t.dodgeTimer = 0.25;
+        t.stun = Math.max(t.stun, 0.7);
+        this.schedule(0.25, () => {
+          t.vel.x *= 0.1;
+          t.vel.z *= 0.1;
+          this.damage(t, dmg, a, p.element, 0);
+        });
+        break;
+      }
+      default:
+        break;
+    }
+  }
+
+  /** Mind control: the target fights for the caster's team for a while. */
+  charm(t: Actor, by: Actor, seconds: number) {
+    t.team = by.team;
+    t.charm = seconds;
+    t.aiTarget = null;
+    for (const e of this.actors) if (e.aiTarget === t) e.aiTarget = null;
+    this.fx.ring(t.pos, ELEMENT_COLORS.psychic, 2.2, 0.6);
+  }
+
+  /** A short-lived ghostly duplicate of the caster that fights on its own. */
+  summon(caster: Actor, at: THREE.Vector3, seconds: number): Actor {
+    const best = caster.skills.find((s) => s.power.kind === 'blast' || s.power.kind === 'optic')?.power;
+    const echo = new Actor(`${caster.name} Echo`, caster.team, 'summon', caster.stats, caster.level, caster.appearance,
+      best ? [{ ...best, kind: 'blast' }] : [], Math.round(caster.maxHp * 0.25), caster.character);
+    echo.summoned = true;
+    echo.life = seconds;
+    echo.damageMult = 0.4 * caster.damageMult;
+    echo.pos.copy(at);
+    echo.facing = caster.facing;
+    echo.ai.spawn = 0.3;
+    echo.setOpacity(0.55);
+    this.add(echo);
+    this.fx.flare(echo.center, ELEMENT_COLORS[best?.element ?? 'energy'], 1.6, 0.35);
+    return echo;
   }
 
   /** Player-only ultimate: a massive elemental detonation. */
@@ -578,7 +913,7 @@ export class Combat {
     return true;
   }
 
-  fireProjectile(owner: Actor, dir: THREE.Vector3, damage: number, element: Element, speed: number, size: number, aoe = 0) {
+  fireProjectile(owner: Actor, dir: THREE.Vector3, damage: number, element: Element, speed: number, size: number, aoe = 0, web = 0) {
     const color = ELEMENT_COLORS[element];
     const mat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.95, blending: THREE.AdditiveBlending, depthWrite: false });
     const mesh = new THREE.Mesh(projectileGeo, mat);
@@ -598,7 +933,9 @@ export class Combat {
       life: 2,
       radius: size,
       aoe,
+      web,
     });
+    if (web) mat.color.set('#f4f4ff');
   }
 
   /** Telegraphed ground slam used by brutes and bosses. */
@@ -620,13 +957,26 @@ export class Combat {
 
   // --- Damage --------------------------------------------------------------
 
-  damage(target: Actor, raw: number, source: Actor | null, element: Element | null, knockback = 0) {
+  /** Applies a hit and returns the damage dealt (0 if it was avoided). */
+  damage(target: Actor, raw: number, source: Actor | null, element: Element | null, knockback = 0): number {
     if (target.alive && target.invuln > 0 && target.perfectWindow > 0 && source && source.team !== target.team) {
       target.perfectWindow = 0;
       this.onPerfectDodge(target);
     }
-    if (!target.alive || target.invuln > 0) return;
+    if (!target.alive || target.invuln > 0) return 0;
     let amount = raw * (source?.damageMult ?? 1);
+    if (source) {
+      if (source.growth > 0) amount *= 1.5;
+      if (source.shrink > 0) amount *= 0.5;
+      if (source.stealth > 0) {
+        // Ambush from the shadows.
+        amount *= 2;
+        source.stealth = 0;
+        this.fx.burst(target.center, '#ffffff', 14, 8);
+      }
+    }
+    if (target.growth > 0) amount *= 0.75;
+    if (target.shrink > 0) amount *= 1.3;
     if (element === 'cosmic') amount *= 1.25;
     if (element === 'tech') amount *= 1.1;
     const roll = rollDamage(amount, source?.stats ?? target.stats, target.stats);
@@ -651,7 +1001,7 @@ export class Combat {
     if (element === 'lightning' || element === 'psychic') target.stun = Math.max(target.stun, isBoss ? 0.15 : 0.5);
     if (element === 'kinetic') knockback *= 1.6;
 
-    if (knockback > 0 && source && !isBoss && target.archetype !== 'brute') {
+    if (knockback > 0 && source && !isBoss && target.archetype !== 'brute' && target.growth <= 0 && target.frozen <= 0) {
       const dir = target.pos.clone().sub(source.pos).setY(0).normalize();
       target.vel.x += dir.x * knockback;
       target.vel.z += dir.z * knockback;
@@ -661,12 +1011,22 @@ export class Combat {
     }
 
     if (target.hp <= 0) this.kill(target, source);
+    return dealt;
   }
 
   private kill(target: Actor, source: Actor | null) {
     target.hp = 0;
     target.alive = false;
     this.fx.burst(target.center, '#ffffff', 16, 9);
+    if (target.charm > 0) {
+      target.charm = 0;
+      target.team = target.homeTeam;
+    }
+    // Echoes just fade; they never count as kills or losses.
+    if (target.summoned) {
+      this.schedule(0.5, () => this.remove(target));
+      return;
+    }
     // In squad play, heroes go down instead of out, and teammates can revive them.
     if (this.downedEnabled && isSquad(target) && !target.downed) {
       target.downed = true;
@@ -750,6 +1110,7 @@ export class Combat {
     this.separate();
     this.updateProjectiles(dt);
     this.updateChannels(dt);
+    this.updateZones(dt);
   }
 
   private updateActor(a: Actor, dt: number) {
@@ -765,6 +1126,7 @@ export class Combat {
     a.shield = Math.max(0, a.shield - dt);
     for (const s of a.skills) s.remaining = Math.max(0, s.remaining - dt);
     a.travelRemaining = Math.max(0, a.travelRemaining - dt);
+    this.updateStatuses(a, dt);
     if (a.alive && a.speedTrail(dt)) {
       this.fx.burst(a.center, ELEMENT_COLORS[a.skills[0]?.power.element ?? 'lightning'], 2, 1.5, 0.16);
     }
@@ -805,11 +1167,51 @@ export class Combat {
     a.anim.airborne = !a.grounded && !a.flying;
     a.anim.flying = a.flying;
     a.anim.dead = !a.alive;
-    if (a.alive || a.model.animatesDeath) a.model.update(dt, a.anim);
+    // Time-stopped actors hold their pose.
+    if ((a.alive && a.frozen <= 0) || (!a.alive && a.model.animatesDeath)) a.model.update(dt, a.anim);
+  }
+
+  private updateStatuses(a: Actor, dt: number) {
+    a.root = Math.max(0, a.root - dt);
+    a.frozen = Math.max(0, a.frozen - dt);
+    a.shrink = Math.max(0, a.shrink - dt);
+    a.growth = Math.max(0, a.growth - dt);
+    a.phase = Math.max(0, a.phase - dt);
+    a.stealth = Math.max(0, a.stealth - dt);
+    if (a.charm > 0) {
+      a.charm -= dt;
+      if (Math.random() < dt * 4) this.fx.burst(a.center.add(new THREE.Vector3(0, 0.9, 0)), ELEMENT_COLORS.psychic, 2, 1.5, 0.1);
+      if (a.charm <= 0) {
+        a.charm = 0;
+        a.team = a.homeTeam;
+        a.aiTarget = null;
+      }
+    }
+    if (a.summoned && a.alive) {
+      a.life -= dt;
+      if (a.life <= 0) this.kill(a, null);
+    }
+    if (a.alive && a.regenFactor > 0 && a.sinceHit > 2.5 && a.hp < a.maxHp) this.heal(a, a.maxHp * a.regenFactor * dt);
+
+    // Size: growth and shrinking ease in and out.
+    const size = a.baseScale * (a.growth > 0 ? 1.6 : a.shrink > 0 ? 0.6 : 1);
+    const cur = a.model.root.scale.x;
+    if (Math.abs(cur - size) > 0.001) a.model.root.scale.setScalar(cur + (size - cur) * Math.min(1, dt * 8));
+    a.setOpacity(a.stealth > 0 ? 0.18 : a.phase > 0 ? 0.4 : a.summoned ? 0.55 : 1);
   }
 
   private move(a: Actor, dt: number) {
-    const freeToMove = a.alive && a.stun <= 0 && a.stagger <= 0 && a.dodgeTimer <= 0 && !a.dashHits && !a.leap;
+    if (a.alive && a.frozen > 0) {
+      a.vel.set(0, 0, 0);
+      return;
+    }
+    if (a.alive && a.lift > 0) {
+      a.vel.set(0, (a.liftHeight - a.pos.y) * 5, 0);
+      a.pos.addScaledVector(a.vel, dt);
+      a.grounded = false;
+      return;
+    }
+    const freeToMove = a.alive && a.stun <= 0 && a.stagger <= 0 && a.dodgeTimer <= 0 && !a.dashHits && !a.leap && a.root <= 0;
     if (a.dodgeTimer > 0) a.dodgeTimer -= dt;
 
     if (freeToMove) {
@@ -955,7 +1357,13 @@ export class Combat {
         const color = ELEMENT_COLORS[p.element];
         const radius = Math.max(p.aoe, 1.2);
         for (const e of this.enemiesOf(p.owner)) {
-          if (e.center.distanceTo(pos) <= radius + e.radius) this.damage(e, p.damage, p.owner, p.element, 5);
+          if (e.center.distanceTo(pos) > radius + e.radius) continue;
+          this.damage(e, p.damage, p.owner, p.element, p.web ? 0 : 5);
+          if (p.web) {
+            e.root = Math.max(e.root, e.archetype === 'boss' ? p.web * 0.35 : p.web);
+            e.slow = Math.max(e.slow, p.web + 1);
+            this.fx.ring(e.pos.clone().setY(e.pos.y + 0.1), '#f4f4ff', 1.4, 0.4);
+          }
         }
         if (hit || blocked) {
           this.fx.burst(pos.clone(), color, 10, 7);
@@ -981,6 +1389,20 @@ export class Combat {
       }
       const target = this.findTarget(a, 30);
       if (target) a.faceToward(target.pos);
+      if (c.drain) {
+        if (c.tick <= 0) {
+          c.tick = 0.2;
+          const t = target && target.pos.distanceTo(a.pos) <= 12 ? target : null;
+          if (t) {
+            this.fx.beam(t.center, a.center, ELEMENT_COLORS[c.power.element], 0.1, 0.2);
+            this.fx.burst(a.center, ELEMENT_COLORS[c.power.element], 2, 2, 0.1);
+            const dealt = this.damage(t, c.damage, a, c.power.element, 0);
+            this.heal(a, dealt * 0.6);
+          }
+        }
+        if (c.remaining <= 0) this.channels.splice(i, 1);
+        continue;
+      }
       if (c.tick <= 0) {
         c.tick = 0.15;
         const length = 22;
@@ -1002,7 +1424,33 @@ export class Combat {
     }
   }
 
+  private updateZones(dt: number) {
+    for (let i = this.zones.length - 1; i >= 0; i--) {
+      const z = this.zones[i];
+      z.life -= dt;
+      z.tick -= dt;
+      for (const e of this.enemiesOf(z.owner)) {
+        const to = z.pos.clone().sub(e.pos).setY(0);
+        const d = to.length();
+        if (d > z.radius * 1.6 + e.radius || e.archetype === 'boss') continue;
+        // Drag everything toward the center.
+        if (d > 0.5) e.pos.addScaledVector(to.normalize(), Math.min(d, 5 * dt));
+      }
+      if (z.tick <= 0) {
+        z.tick = 0.5;
+        const color = ELEMENT_COLORS[z.element];
+        this.fx.ring(z.pos, color, z.radius, 0.5);
+        this.fx.ring(z.pos, '#120a24', z.radius * 0.5, 0.4);
+        for (const e of this.enemiesOf(z.owner)) {
+          if (e.pos.distanceTo(z.pos) <= z.radius + e.radius) this.damage(e, z.damage, z.owner, z.element, 0);
+        }
+      }
+      if (z.life <= 0 || !z.owner.alive) this.zones.splice(i, 1);
+    }
+  }
+
   clear() {
+    this.zones = [];
     for (const p of this.projectiles) {
       this.scene.remove(p.mesh);
       (p.mesh.material as THREE.Material).dispose();

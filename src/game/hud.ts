@@ -2,7 +2,7 @@
 // counter, floating damage numbers, dialogue, banners, and touch controls.
 
 import * as THREE from 'three';
-import { ELEMENT_COLORS, xpForLevel } from '../core/rules';
+import { ELEMENT_COLORS, POWER_LABELS, xpForLevel } from '../core/rules';
 import type { DialogueLine, PowerKind } from '../core/types';
 import { h, setChildren, type Child } from '../ui/dom';
 import type { Actor } from './combat';
@@ -11,7 +11,10 @@ import type { Action, Input } from './input';
 
 const KIND_ICON: Record<PowerKind, string> = {
   blast: '✦', beam: '═', nova: '✺', dash: '➤', shield: '⛨', heal: '✚',
-  flight: '⇮', teleport: '⌖', superspeed: '≫', leap: '⤊',
+  flight: '⇮', teleport: '⌖', superspeed: '≫', leap: '⤊', swing: '↷',
+  optic: '◉', web: '❋', telekinesis: '☄', reality: '❂', mindcontrol: '♾', summon: '⚇', drain: '☠',
+  gravity: '◍', storm: 'ϟ', timestop: '⧗', phase: '◌', sonic: '≋', grow: '⇱', stealth: '◐', stretch: '↭',
+  regeneration: '♥',
 };
 
 const isTouch = () => window.matchMedia('(pointer: coarse)').matches;
@@ -114,7 +117,7 @@ export class Hud {
       const el = h('button', {
         class: `skill skill-${slot}`,
         style: `--c:${color}`,
-        title: `${s.power.name} (${s.power.kind}, ${s.power.element})`,
+        title: `${s.power.name} (${POWER_LABELS[s.power.kind]}, ${s.power.element})`,
         onpointerdown: press(`skill${slot}` as Action),
       }, h('span', { class: 'skill-icon' }, KIND_ICON[s.power.kind]), h('span', { class: 'key' }, keyHints[slot]));
       this.skillButtons.push({ el, slot });

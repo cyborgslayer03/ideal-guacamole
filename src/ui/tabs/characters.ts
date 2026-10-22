@@ -3,11 +3,11 @@ import { newId } from '../../core/id';
 import { Rng, randomSeed } from '../../core/rng';
 import {
   ELEMENT_COLORS, RARITY_COLORS, SKILL_SLOTS, basicDamage, combatPower, effectiveStats, maxEnergy, maxHealth,
-  leapSlamRadius, powerCooldown, powerCost, powerDamage, speedMultiplier, teleportRange,
+  POWER_INFO, POWER_LABELS, leapSlamRadius, powerCooldown, powerCost, powerDamage, regenRate, speedMultiplier, teleportRange,
 } from '../../core/rules';
 import { bundleCharacter } from '../../core/share';
 import {
-  BUILDS, ELEMENTS, EMBLEMS, HEAD_STYLES, MOVEMENT_KINDS, POWER_KINDS, ROLES, STAT_KEYS, isMovement,
+  BUILDS, ELEMENTS, EMBLEMS, HEAD_STYLES, MOVEMENT_KINDS, POWER_KINDS, ROLES, STAT_KEYS, isMovement, isTravel, takesSkillSlot,
   type Character, type MovementKind, type Power, type PowerKind, type StatKey, type Stats,
 } from '../../core/types';
 import { deleteButton, listDetail, removeById, type EditorContext } from '../context';
@@ -83,7 +83,7 @@ export function charactersTab(ctx: EditorContext): HTMLElement {
   });
 }
 
-const MOVE_BADGE: Partial<Record<PowerKind, string>> = { flight: 'Flight', teleport: 'Teleport', superspeed: 'Super Speed', leap: 'Super Leap' };
+const MOVE_BADGE: Partial<Record<PowerKind, string>> = { flight: 'Flight', teleport: 'Teleport', superspeed: 'Super Speed', leap: 'Super Leap', swing: 'Web Swing' };
 
 /** Pick ready-made heroes and villains to add to this universe. */
 function openLegendPicker(ctx: EditorContext) {
@@ -112,7 +112,7 @@ function openLegendPicker(ctx: EditorContext) {
       h('span', { class: 'muted small' }, spec.style),
       h('span', { class: 'legend-tags' },
         ...moves.map((m) => h('span', { class: 'bond', style: '--c:#3ee8ff' }, m)),
-        ...spec.powers.filter((p) => !isMovement(p.kind)).map((p) => h('i', { class: 'legend-dot', style: `background:${ELEMENT_COLORS[p.element]}`, title: `${p.name} (${p.kind})` })),
+        ...spec.powers.filter((p) => !isMovement(p.kind)).map((p) => h('i', { class: 'legend-dot', style: `background:${ELEMENT_COLORS[p.element]}`, title: `${p.name} (${POWER_LABELS[p.kind]})` })),
       ),
     ));
     if (owned()) btn.classList.add('owned');
@@ -209,15 +209,15 @@ function characterEditor(ctx: EditorContext, c: Character): HTMLElement {
     !ctx.quick && field('Level', slider(() => c.level, (v) => ((c.level = v), (c.xp = 0), changed()), 1, 60)),
   );
 
-  const activeCount = c.powers.filter((p) => !isMovement(p.kind)).length;
-  const travelPowers = c.powers.filter((p) => p.kind === 'flight' || p.kind === 'teleport' || p.kind === 'leap');
+  const activeCount = c.powers.filter((p) => takesSkillSlot(p.kind)).length;
+  const travelPowers = c.powers.filter((p) => isTravel(p.kind));
   const addMovement = (kind: MovementKind) => {
     c.powers.push(randomPower(rng(), kind, c.powers[0]?.element));
     changed();
     ctx.rerender();
   };
   const powers = section('Powers',
-    h('p', { class: 'muted' }, `Up to ${SKILL_SLOTS} attack and support powers map to Q E R F. Movement powers go on V (Flight, Teleport, Super Leap); Super Speed is always on.`),
+    h('p', { class: 'muted' }, `Up to ${SKILL_SLOTS} attack and support powers map to Q E R F. Movement powers go on V (Flight, Teleport, Super Leap, Web Swing); Super Speed and Healing Factor are always on.`),
     ...c.powers.map((p, i) => powerEditor(ctx, c, p, i, changed)),
     h('div', { class: 'row' },
       h('button', { class: 'btn small', onclick: () => (c.powers.push(randomPower(rng())), changed(), ctx.rerender()) }, '+ Power'),
@@ -231,7 +231,7 @@ function characterEditor(ctx: EditorContext, c: Character): HTMLElement {
       ),
     ),
     activeCount > SKILL_SLOTS && h('p', { class: 'warn' }, `Only the first ${SKILL_SLOTS} attack and support powers are usable in combat.`),
-    travelPowers.length > 1 && h('p', { class: 'warn' }, `Only one of Flight, Teleport, or Super Leap works on V. ${travelPowers[0].name} is used; remove it to use ${travelPowers[1].name}.`),
+    travelPowers.length > 1 && h('p', { class: 'warn' }, `Only one of Flight, Teleport, Super Leap, or Web Swing works on V. ${travelPowers[0].name} is used; remove it to use ${travelPowers[1].name}.`),
   );
 
   const gear = section('Gear',
@@ -288,6 +288,7 @@ const MOVEMENT_LABELS: Record<MovementKind, string> = {
   teleport: 'Teleport',
   superspeed: 'Super Speed',
   leap: 'Super Leap',
+  swing: 'Web Swing',
 };
 
 function powerEditor(ctx: EditorContext, c: Character, p: Power, index: number, changed: () => void): HTMLElement {
@@ -308,8 +309,14 @@ function powerEditor(ctx: EditorContext, c: Character, p: Power, index: number, 
       case 'leap':
         info.textContent = `Movement · V to leap · ${dmg} dmg landing slam (${leapSlamRadius(p).toFixed(1)}m) · ${powerCooldown(p, stats)}s cooldown`;
         break;
+      case 'swing':
+        info.textContent = `Movement · V to swing, chain swings in the air · ${powerCooldown(p, stats)}s cooldown`;
+        break;
+      case 'regeneration':
+        info.textContent = `Passive · heal ${(regenRate([p]) * 100).toFixed(1)}% health per second when not taking damage`;
+        break;
       default:
-        info.textContent = `${dmg > 0 ? `${dmg} dmg · ` : ''}${powerCooldown(p, stats)}s cooldown · ${powerCost(p)} energy`;
+        info.textContent = `${POWER_INFO[p.kind]} ${dmg > 0 ? `${dmg} dmg · ` : ''}${powerCooldown(p, stats)}s cooldown · ${powerCost(p)} energy`;
     }
   };
   refreshInfo();
@@ -323,7 +330,7 @@ function powerEditor(ctx: EditorContext, c: Character, p: Power, index: number, 
       h('button', { class: 'icon-btn', title: 'Remove power', onclick: () => (c.powers.splice(index, 1), changed(), ctx.rerender()) }, '✕'),
     ),
     h('div', { class: 'grid-3' },
-      field('Type', select(POWER_KINDS, () => p.kind, (v) => ((p.kind = v), update()))),
+      field('Type', select(POWER_KINDS.map((k) => ({ value: k, label: POWER_LABELS[k] })), () => p.kind, (v) => ((p.kind = v), update()))),
       field('Element', select(ELEMENTS, () => p.element, (v) => {
         p.element = v;
         card.style.setProperty('--c', ELEMENT_COLORS[v]);

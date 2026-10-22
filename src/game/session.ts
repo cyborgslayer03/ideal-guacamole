@@ -463,7 +463,7 @@ export class GameSession {
     const density = this.rules.enemyDensity;
     const level = r.plan.level;
     const factionId = r.plan.factionId;
-    const alive = s.combat.actors.filter((a) => a.team === 'enemy' && a.alive && a.archetype !== 'boss').length;
+    const alive = s.combat.actors.filter((a) => isFoe(a) && a.alive && a.archetype !== 'boss').length;
     r.elapsed += dt;
     r.spawnTimer -= dt;
     const canSpawn = (max: number) => r.spawnTimer <= 0 && alive < Math.round(max * density);
@@ -547,7 +547,7 @@ export class GameSession {
           s.hud.setObjective(inside ? `Protect civilians  ${formatTime(left)}` : 'Return to the civilians!');
           if (left <= 0) {
             this.retireBeacon(active);
-            for (const e of s.combat.actors.filter((a) => a.team === 'enemy' && a.alive && a.archetype !== 'boss' && a.pos.distanceTo(active.pos) < 25)) {
+            for (const e of s.combat.actors.filter((a) => isFoe(a) && a.alive && a.archetype !== 'boss' && a.pos.distanceTo(active.pos) < 25)) {
               s.combat.damage(e, 1e6, s.player, null);
             }
             s.hud.banner('Civilians Saved', '', 1.4);
@@ -613,7 +613,7 @@ export class GameSession {
     s.hud.setBoss(null);
     this.slowmo = 1.2;
     for (const a of s.combat.actors) {
-      if (a.team === 'enemy' && a.alive) {
+      if ((a.team === 'enemy' || a.homeTeam === 'enemy') && a.alive) {
         s.fx.flare(a.center, '#ffffff', 2, 0.4);
         a.alive = false;
       }
@@ -1187,7 +1187,7 @@ export class GameSession {
     const s = this.stage;
     if (!s) return;
     for (const a of [...s.combat.actors]) {
-      if (a.team === 'enemy') {
+      if (a.team === 'enemy' || a.homeTeam === 'enemy' || a.summoned) {
         s.fx.flare(a.center, '#ffffff', 2, 0.3);
         s.combat.remove(a);
       }
@@ -1210,7 +1210,7 @@ export class GameSession {
       h('p', null, 'WASD / joystick — move · Space — jump (double jump)'),
       h('p', null, 'J / click — combo attack · Shift — dodge'),
       h('p', null, 'Q E R F — powers · X — ultimate'),
-      h('p', null, 'V — movement power: toggle flight (Space/C rise/fall), teleport, or super leap'),
+      h('p', null, 'V — movement power: toggle flight (Space/C rise/fall), teleport, super leap, or web swing'),
       h('p', null, 'Right-drag or arrow keys — camera · Wheel — zoom'),
       this.run && h('p', null, 'Abandoning a mission leaves the world unchanged.'),
     ), [
@@ -1242,7 +1242,8 @@ export class GameSession {
 
     if (!this.paused) {
       this.controlPlayer(s, dt);
-      for (const a of s.combat.actors) if (a.team === 'enemy') updateEnemy(a, s.combat, dt);
+      // Everyone outside the squad runs on enemy brains, including mind-controlled foes and summoned echoes.
+      for (const a of s.combat.actors) if (a !== s.player && !s.allies.includes(a) && !this.helpers.includes(a)) updateEnemy(a, s.combat, dt);
       const ctx: SquadContext = { order: this.order, focus: this.focusTarget, holdAt: this.holdAt };
       for (const ally of s.allies) updateAlly(ally, s.combat, dt, s.player, ctx);
       for (const helper of this.helpers) updateAlly(helper, s.combat, dt, s.player);
@@ -1395,4 +1396,9 @@ function hashString(s: string): number {
   let h = 2166136261;
   for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619);
   return h >>> 0;
+}
+
+/** Counts toward objectives: started on the enemy side (mind control doesn't hide it) and isn't a summoned echo. */
+function isFoe(a: Actor): boolean {
+  return a.homeTeam === 'enemy' && !a.summoned;
 }

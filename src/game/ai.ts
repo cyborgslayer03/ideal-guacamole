@@ -3,7 +3,32 @@
 
 import * as THREE from 'three';
 import { basicDamage } from '../core/rules';
+import type { PowerKind } from '../core/types';
 import type { Actor, Combat, SquadRole } from './combat';
+
+/** Whether casting a power of this kind makes sense right now. */
+export function powerUseful(a: Actor, kind: PowerKind, gap: number): boolean {
+  switch (kind) {
+    case 'heal':
+      return a.hp < a.maxHp * 0.6;
+    case 'nova': case 'dash': case 'sonic': case 'timestop':
+      return gap < 7;
+    case 'shield': case 'phase':
+      return a.sinceHit < 1;
+    case 'grow': case 'stealth': case 'summon':
+      return gap < 12;
+    case 'drain':
+      return gap < 10 && a.hp < a.maxHp * 0.9;
+    case 'stretch':
+      return gap > 2.5 && gap < 13;
+    case 'telekinesis': case 'reality': case 'mindcontrol': case 'web':
+      return gap < 20;
+    case 'storm': case 'gravity':
+      return gap < 16;
+    default:
+      return true;
+  }
+}
 
 function cooldown(e: Actor, key: string, dt: number): number {
   e.ai[key] = (e.ai[key] ?? 0) - dt;
@@ -126,9 +151,7 @@ export function updateEnemy(e: Actor, combat: Combat, dt: number) {
         const wantPower = ready.length > 0 && cooldown(e, 'power', dt) <= 0 && dist < 22;
         if (wantPower) {
           const slot = ready[Math.floor(Math.random() * ready.length)];
-          const kind = e.skills[slot].power.kind;
-          const useful = kind === 'heal' ? e.hp < e.maxHp * 0.6 : kind === 'nova' || kind === 'dash' ? dist < 9 : true;
-          if (useful) {
+          if (powerUseful(e, e.skills[slot].power.kind, gap)) {
             combat.castPower(e, slot);
             e.ai.power = 1.8 + Math.random() * 1.5;
             break;
@@ -150,6 +173,25 @@ export function updateEnemy(e: Actor, combat: Combat, dt: number) {
       break;
     }
 
+    case 'summon':
+      // Echoes harry the nearest enemy with melee and their copied blast.
+      climbToward(e, combat, target);
+      if (!e.busy && attackReady) {
+        if (dist > 5 && dist < 18 && combat.canCast(e, 0)) {
+          combat.castPower(e, 0);
+          e.ai.attack = 1.6 + Math.random();
+          break;
+        }
+        if (gap < 1.4) {
+          e.faceToward(target.pos);
+          combat.basicAttack(e);
+          e.ai.attack = 0.5 + Math.random() * 0.4;
+          break;
+        }
+      }
+      if (gap > 1.2) steerToward(e, target.pos);
+      break;
+
     case 'hero':
     case 'ally':
       break;
@@ -168,13 +210,15 @@ export interface SquadContext {
 
 const FREE: SquadContext = { order: 'free', focus: null, holdAt: null };
 
+const RANGED_KINDS: ReadonlySet<PowerKind> = new Set(['blast', 'beam', 'optic', 'web', 'telekinesis', 'reality', 'mindcontrol', 'storm', 'gravity', 'drain']);
+
 /** Reads a teammate's kit and stats to decide how they fight. */
 export function squadRole(a: Actor): SquadRole {
   const kinds = a.skills.map((s) => s.power.kind);
   const st = a.stats;
   if (kinds.includes('heal') && st.energy + st.intelligence >= 13) return 'support';
   if (st.durability >= 8 || (kinds.includes('shield') && st.durability >= 7)) return 'tank';
-  if (kinds.filter((k) => k === 'blast' || k === 'beam').length >= 2 && st.energy >= st.strength) return 'ranged';
+  if (kinds.filter((k) => RANGED_KINDS.has(k)).length >= 2 && st.energy >= st.strength) return 'ranged';
   return 'striker';
 }
 
@@ -258,9 +302,7 @@ export function updateAlly(a: Actor, combat: Combat, dt: number, leader: Actor, 
     const ready = a.skills.map((_, i) => i).filter((i) => combat.canCast(a, i));
     if (ready.length && cooldown(a, 'power', dt) <= 0) {
       const slot = ready[Math.floor(Math.random() * ready.length)];
-      const kind = a.skills[slot].power.kind;
-      const useful = kind === 'heal' ? a.hp < a.maxHp * 0.6 : kind === 'nova' || kind === 'dash' ? gap < 6 : kind !== 'shield' || a.sinceHit < 1;
-      if (useful) {
+      if (powerUseful(a, a.skills[slot].power.kind, gap)) {
         a.faceToward(target.pos);
         if (combat.castPower(a, slot)) {
           a.ai.power = (role === 'ranged' ? 1.5 : 2.5) + Math.random() * 1.5;

@@ -60,6 +60,23 @@ const POWER_NAMES: Record<PowerKind, string[]> = {
   teleport: ['Blink', 'Shift', 'Step', 'Warp'],
   superspeed: ['Velocity', 'Rush', 'Momentum', 'Overdrive'],
   leap: ['Leap', 'Bound', 'Vault', 'Pounce'],
+  swing: ['Swing', 'Tether', 'Grapple Line', 'Slingshot'],
+  optic: ['Eye-Beams', 'Optic Blast', 'Gaze', 'Glare'],
+  web: ['Web', 'Snare', 'Net', 'Tangle'],
+  telekinesis: ['Telekinesis', 'Mind Lift', 'Grip', 'Throw'],
+  reality: ['Reality Warp', 'Paradox', 'Unmaking', 'Rewrite'],
+  mindcontrol: ['Dominion', 'Thrall', 'Puppetry', 'Command'],
+  summon: ['Echoes', 'Legion', 'Doubles', 'Swarm'],
+  drain: ['Drain', 'Siphon', 'Leech', 'Absorption'],
+  gravity: ['Singularity', 'Gravity Well', 'Crush', 'Vortex'],
+  storm: ['Storm', 'Tempest', 'Thunderhead', 'Squall'],
+  timestop: ['Stasis', 'Time Stop', 'Freeze Frame', 'Still Point'],
+  phase: ['Phase', 'Ghost Step', 'Intangibility', 'Fade'],
+  sonic: ['Scream', 'Sonic Cry', 'Resonance', 'Shriek'],
+  grow: ['Growth', 'Titan Form', 'Colossus', 'Upscale'],
+  stealth: ['Cloak', 'Vanish', 'Veil', 'Shadow Step'],
+  stretch: ['Stretch', 'Elastic Grab', 'Long Reach', 'Snap Line'],
+  regeneration: ['Healing Factor', 'Regrowth', 'Recovery', 'Undying'],
 };
 const ELEMENT_WORDS: Record<Element, string[]> = {
   kinetic: ['Kinetic', 'Force', 'Impact'],
@@ -126,8 +143,16 @@ export function randomStats(rng: Rng, budget = 33): Stats {
   return stats;
 }
 
+/** Random single powers lean on the classics; the exotic ones still come up. */
+const ACTIVE_POOL = [
+  'blast', 'blast', 'beam', 'nova', 'dash', 'shield', 'heal',
+  'optic', 'web', 'telekinesis', 'reality', 'mindcontrol', 'summon', 'drain', 'gravity', 'storm', 'timestop',
+  'phase', 'sonic', 'grow', 'stealth', 'stretch',
+] as const satisfies readonly PowerKind[];
+const SET_POOL = ACTIVE_POOL.filter((k) => k !== 'blast');
+
 export function randomPower(rng: Rng, kind?: PowerKind, element?: Element): Power {
-  const k = kind ?? rng.pick(['blast', 'blast', 'beam', 'nova', 'dash', 'shield', 'heal'] as const);
+  const k = kind ?? rng.pick(ACTIVE_POOL);
   const el = element ?? rng.pick(ELEMENTS);
   const name = k === 'flight' && rng.chance(0.5) ? 'Flight' : `${rng.pick(ELEMENT_WORDS[el])} ${rng.pick(POWER_NAMES[k])}`;
   return {
@@ -143,10 +168,11 @@ export function randomPower(rng: Rng, kind?: PowerKind, element?: Element): Powe
 /** A themed power set: one signature element, varied attack kinds, and usually a way to get around. */
 export function randomPowerSet(rng: Rng): Power[] {
   const element = rng.pick(ELEMENTS);
-  const kinds = rng.shuffle(['beam', 'nova', 'dash', 'shield', 'heal'] as const).slice(0, rng.int(1, 3));
+  const kinds = rng.shuffle(SET_POOL).slice(0, rng.int(1, 3));
   const powers = [randomPower(rng, 'blast', element), ...kinds.map((k) => randomPower(rng, k, rng.chance(0.7) ? element : undefined))];
+  if (rng.chance(0.15)) powers.push(randomPower(rng, 'regeneration', 'nature'));
   if (rng.chance(0.75)) {
-    const move = rng.pick(['flight', 'teleport', 'leap', 'superspeed'] as const);
+    const move = rng.pick(['flight', 'teleport', 'leap', 'superspeed', 'swing'] as const);
     powers.push(randomPower(rng, move, element));
     // Speedsters sometimes pair their speed with a jump.
     if (move === 'superspeed' && rng.chance(0.3)) powers.push(randomPower(rng, 'leap', element));

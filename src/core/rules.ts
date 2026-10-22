@@ -1,7 +1,7 @@
 // Game balance: how stats, levels, items, and powers turn into numbers.
 // Kept free of rendering code so it can be unit-tested and reused server-side.
 
-import { STAT_KEYS, isMovement, type Character, type Element, type Item, type Power, type PowerKind, type Rarity, type Stats, type UniverseRules } from './types';
+import { STAT_KEYS, takesSkillSlot, type Character, type Element, type Item, type Power, type PowerKind, type Rarity, type Stats, type UniverseRules } from './types';
 
 export const STAT_MIN = 1;
 export const STAT_MAX = 10;
@@ -80,6 +80,23 @@ const KIND_DAMAGE: Record<PowerKind, number> = {
   teleport: 0.6, // arrival shockwave
   superspeed: 0,
   leap: 1.1, // landing slam
+  swing: 0,
+  optic: 1.1,
+  web: 0.5,
+  telekinesis: 1.5, // the slam back down
+  reality: 1.3,
+  mindcontrol: 0.3,
+  summon: 0,
+  drain: 0.3, // per tick
+  gravity: 0.3, // per tick
+  storm: 0.7, // per strike
+  timestop: 0.2,
+  phase: 0,
+  sonic: 0.9,
+  grow: 0,
+  stealth: 0,
+  stretch: 0.8,
+  regeneration: 0,
 };
 
 export function powerDamage(power: Power, stats: Stats, level: number, powerScale = 1): number {
@@ -98,6 +115,64 @@ const KIND_COOLDOWN: Record<PowerKind, number> = {
   teleport: 3.5,
   superspeed: 0,
   leap: 5,
+  swing: 1.2,
+  optic: 4,
+  web: 6,
+  telekinesis: 9,
+  reality: 14,
+  mindcontrol: 18,
+  summon: 20,
+  drain: 9,
+  gravity: 12,
+  storm: 12,
+  timestop: 22,
+  phase: 14,
+  sonic: 7,
+  grow: 24,
+  stealth: 16,
+  stretch: 6,
+  regeneration: 0,
+};
+
+/** Display names for power types. */
+export const POWER_LABELS: Record<PowerKind, string> = {
+  blast: 'Energy Blast', beam: 'Beam', nova: 'Nova Burst', dash: 'Power Dash', shield: 'Shield', heal: 'Healing',
+  optic: 'Optic Blast', web: 'Web Shot', telekinesis: 'Telekinesis', reality: 'Reality Warp', mindcontrol: 'Mind Control',
+  summon: 'Summon Echoes', drain: 'Life Drain', gravity: 'Gravity Well', storm: 'Storm Call', timestop: 'Time Stop',
+  phase: 'Phasing', sonic: 'Sonic Scream', grow: 'Giant Growth', stealth: 'Stealth', stretch: 'Stretch Grab',
+  regeneration: 'Healing Factor', flight: 'Flight', teleport: 'Teleport', superspeed: 'Super Speed', leap: 'Super Leap',
+  swing: 'Web Swing',
+};
+
+/** One-line explanation of what each power type does in combat. */
+export const POWER_INFO: Record<PowerKind, string> = {
+  blast: 'Fires projectiles; higher potency fires more.',
+  beam: 'A sustained beam that tracks the target.',
+  nova: 'An explosion all around you.',
+  dash: 'Charge forward, hitting everything in the way.',
+  shield: 'Blocks most incoming damage for a few seconds.',
+  heal: 'Heals you and nearby teammates over time.',
+  optic: 'An instant piercing eye-beam that knocks enemies back.',
+  web: 'A sticky shot that roots and slows its target.',
+  telekinesis: 'Lifts an enemy into the air, then slams them down.',
+  reality: 'Rewrites a foe: shrinks them, weakens them, or turns them to your side.',
+  mindcontrol: 'Makes a minion fight for you for a while. Stuns bosses.',
+  summon: 'Calls ghostly duplicates of yourself to fight alongside you.',
+  drain: 'Siphons life from the target to heal yourself.',
+  gravity: 'Opens a well that drags enemies in and crushes them.',
+  storm: 'Calls down lightning strikes on nearby enemies.',
+  timestop: 'Freezes enemies around you in time.',
+  phase: 'Become intangible: attacks pass right through you.',
+  sonic: 'A cone of sound that stuns and blows enemies away.',
+  grow: 'Grow to giant size: more damage, less damage taken, no knockback.',
+  stealth: 'Turn invisible; enemies lose you, and your next hit lands double.',
+  stretch: 'Elastic reach that yanks an enemy to you (or you to a boss).',
+  regeneration: 'Passive: heal steadily whenever you avoid damage for a moment.',
+  flight: 'V to take off and land.',
+  teleport: 'V to blink beside the target.',
+  superspeed: 'Passive: run much faster.',
+  leap: 'V to leap and slam down.',
+  swing: 'V to swing across the city on a line, even mid-air.',
 };
 
 /** Seconds. Smarter characters recover faster. */
@@ -107,7 +182,7 @@ export function powerCooldown(power: Power, stats: Stats): number {
 }
 
 export function powerCost(power: Power): number {
-  if (isMovement(power.kind)) return 0;
+  if (!takesSkillSlot(power.kind)) return 0;
   return Math.round(10 + power.potency * 3);
 }
 
@@ -120,6 +195,12 @@ export function speedMultiplier(powers: readonly Power[]): number {
 /** How far a teleport carries, in meters. */
 export function teleportRange(power: Power): number {
   return 9 + power.potency * 0.8;
+}
+
+/** Healing Factor: fraction of max health restored per second while not taking damage. */
+export function regenRate(powers: readonly Power[]): number {
+  const p = powers.find((x) => x.kind === 'regeneration');
+  return p ? 0.004 + p.potency * 0.0012 : 0;
 }
 
 /** Radius of a Super Leap's landing slam, in meters. */
@@ -213,7 +294,7 @@ const RARITY_WEIGHT: Record<Rarity, number> = { common: 1, rare: 1.5, epic: 2.2,
 export function combatPower(character: Character, items: readonly Item[]): number {
   const stats = effectiveStats(character, items);
   const statSum = STAT_KEYS.reduce((sum, k) => sum + stats[k], 0);
-  const powerSum = character.powers.reduce((sum, p) => sum + p.potency * (isMovement(p.kind) ? 0.5 : 1), 0);
+  const powerSum = character.powers.reduce((sum, p) => sum + p.potency * (takesSkillSlot(p.kind) ? 1 : 0.5), 0);
   const gear = character.itemIds.reduce((sum, id) => {
     const item = items.find((i) => i.id === id);
     return item ? sum + RARITY_WEIGHT[item.rarity] : sum;
