@@ -76,6 +76,8 @@ export interface MissionResult {
   grade?: Grade;
   /** Squad members (not the mission's hero) who fought in the mission. */
   squadIds?: string[];
+  /** Team combos triggered. */
+  combos?: number;
 }
 
 export type Grade = 'S' | 'A' | 'B' | 'C';

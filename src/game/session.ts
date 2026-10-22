@@ -21,6 +21,7 @@ import { updateAlly, updateEnemy, type SquadContext, type SquadOrder } from './a
 import { ARENA_RADIUS, buildArena, type Arena } from './arena';
 import { Actor, Combat } from './combat';
 import { audio, type Intensity, type Sfx } from './audio';
+import { BossDirector } from './bossphase';
 import { loadoutFor, masteryUnlocked } from '../core/progression';
 import { Effects } from './effects';
 import { Hud } from './hud';
@@ -55,6 +56,7 @@ interface Stage {
   allies: Actor[];
   hud: Hud;
   location: Location;
+  bosses: BossDirector;
 }
 
 interface Beacon {
@@ -83,6 +85,7 @@ interface Run {
   startedAt: number;
   damageTaken: number;
   downs: number;
+  combos: number;
 }
 
 export class GameSession {
@@ -239,6 +242,12 @@ export class GameSession {
     combat.onDowned = (a) => this.onDowned(a);
     combat.onRevived = (a, by) => this.stage?.hud.banner(`${a.name} is back up`, by ? `Revived by ${by.name}` : '', 1.6);
     combat.onSound = (name, pos, element) => this.playSound(name, pos, element);
+    combat.onCombo = (recipe, first, second) => {
+      if (this.run) this.run.combos++;
+      hud.teamGauge = Math.min(100, hud.teamGauge + 25);
+      this.hitstop = Math.max(this.hitstop, 0.08);
+      if (first.team === 'player') hud.banner(`Combo! ${recipe.name}`, `${first.name} + ${second.name}`, 1.4);
+    };
     combat.onPerfectDodge = (a) => {
       if (a !== this.stage?.player) return;
       audio().play('perfect');
@@ -247,7 +256,21 @@ export class GameSession {
       hud.banner('Perfect Dodge', '+15 ultimate charge', 1);
     };
 
-    this.stage = { arena, combat, fx, player, allies, hud, location };
+    // Bosses fight in acts: enrage at 60%, last stand at 25%.
+    const bosses = new BossDirector(combat, {
+      spawnMinions: (count, near, boss) => {
+        for (let i = 0; i < count; i++) this.spawnMinion(this.pickMinion(boss.level), boss.level, boss.character?.factionId ?? this.run?.plan.factionId ?? null, near);
+      },
+      announce: (boss, phase, piece) => {
+        const st = this.stage;
+        if (!st) return;
+        const detail = { echoes: 'Echoes join the fight', giant: 'They grow to giant size', reinforcements: 'Reinforcements arrive', shield: 'Shielded, with backup on the way' }[piece];
+        st.hud.banner(`${boss.name} ${phase.subtitle}`, `${detail} · Watch for the warning circles!`, 2.2);
+        st.hud.refreshBoss(boss);
+        this.slowmo = Math.max(this.slowmo, 0.7);
+      },
+    });
+    this.stage = { arena, combat, fx, player, allies, hud, location, bosses };
     hud.setSquad([player, ...allies]);
     hud.setOrder(ORDER_LABELS[this.order]);
     this.camYaw = Math.PI;
@@ -380,7 +403,7 @@ export class GameSession {
     this.run = {
       plan, phase: -1, killed: 0, spawned: 0, elapsed: 0, spawnTimer: 0, bosses: [], defeated: [], beacons: [],
       ambush: plan.ambushId ? 'pending' : 'none', transitioning: true, done: false,
-      startedAt: 0, damageTaken: 0, downs: 0,
+      startedAt: 0, damageTaken: 0, downs: 0, combos: 0,
     };
     const run = this.run;
     s.hud.setObjective('');
@@ -675,11 +698,11 @@ export class GameSession {
     this.opts.onSave();
 
     const squadIds = [s.player, ...s.allies].map((a) => a.character?.id).filter((id): id is string => !!id && id !== this.character.id);
-    const result: MissionResult = { victory: true, defeatedBossIds: r.defeated, survivingBossIds: [], outcomes, choice, ambient, grade: graded.grade, squadIds };
+    const result: MissionResult = { victory: true, defeatedBossIds: r.defeated, survivingBossIds: [], outcomes, choice, ambient, grade: graded.grade, squadIds, combos: r.combos };
     s.hud.modal(
       'Mission Complete',
       h('div', { class: 'rewards' },
-        h('div', { class: 'row' }, h('span', { class: `grade grade-${graded.grade}` }, graded.grade), h('span', { class: 'muted small' }, `Score ${graded.score} · ${formatTime(this.time - r.startedAt)} · best combo ${s.hud.maxCombo} · ${r.downs} downs`)),
+        h('div', { class: 'row' }, h('span', { class: `grade grade-${graded.grade}` }, graded.grade), h('span', { class: 'muted small' }, `Score ${graded.score} · ${formatTime(this.time - r.startedAt)} · best combo ${s.hud.maxCombo} · ${r.combos} team combos · ${r.downs} downs`)),
         h('div', null, `+${xp} XP${graded.xpBonus ? ` (grade bonus +${Math.round(graded.xpBonus * 100)}%)` : ''}${s.allies.length ? ' for the whole squad' : ''}`),
         levels > 0 && h('div', { class: 'reward-level' }, `LEVEL UP! Now level ${this.character.level}`),
         reward && h('div', { style: `color:${RARITY_COLORS[reward.rarity]}` }, `Reward: ${rewardNote}`),
@@ -1265,6 +1288,7 @@ export class GameSession {
       this.ambient?.update(dt);
       if (!this.run) this.checkPortals(s);
       s.combat.update(dt);
+      s.bosses.update(dt);
       if (this.godMode) s.player.hp = s.player.maxHp;
       this.updateRun(dt);
       // Dead actors topple and sink.

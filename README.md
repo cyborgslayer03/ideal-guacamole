@@ -74,6 +74,42 @@ AI bosses, companions, and enemies use all of them, and only when they make sens
 
 Add any of them to any universe with **★ Legends** in the Characters tab. Every legend is fully editable once added.
 
+### Team combos
+When one hero's power hits an enemy, it's **marked** for 3 seconds (a flicker of the power's color above it). If a *different* teammate then lands a power on it, the two combine into a combo that blasts everything nearby:
+
+| Combo | Made from |
+| --- | --- |
+| **Cocoon Hurl** | Web Shot + Telekinesis |
+| **Web Bomb** | Web Shot + Nova |
+| **Slingshot** | Stretch Grab + Dash |
+| **Lightning Vortex** | Gravity Well + lightning or Storm Call |
+| **Thunderclap** | Sonic Scream + Storm Call |
+| **Time Bomb** | Time Stop + anything (goes off a second later) |
+| **Reality Collapse** | Reality Warp + anything |
+| **Shatter** | ice + kinetic |
+| **Plasma Burst** | fire + lightning |
+| **Toxic Bloom** | nature + fire |
+| **Supernova** | cosmic + energy |
+| **Nightmare** | psychic or Mind Control + shadow |
+| **Crossfire** | any two different elements (smaller) |
+
+AI teammates go after enemies you've marked and fire a power right away to finish the combo. Combos charge Team Assault, show in the mission results, and the **Synergy** contract asks for 3 in one mission. Summoned echoes count as teammates too.
+
+### Boss phases
+Bosses fight in acts. At **60%** health they **enrage**: a shockwave clears the area, they hit harder, their cooldowns shorten, and they unleash a set piece that suits their kit. Summoners and mind controllers call echoes, giants grow, and everyone else calls in reinforcements. From then on they call down **telegraphed hazards** of their element at the heroes' feet, so keep moving. At **25%** they make a **Last Stand**: shielded, with backup and faster hazards.
+
+### Villain schemes
+Faction leaders and nemeses hatch plots that count down on the War Table. Every mission or time skip moves the clock, and failing a scheme mission speeds it up. Stop them with a three-act **Scheme** mission (fight through, hold the sabotage point, beat the mastermind), which drops extra loot. Ignore one and it happens:
+
+| Scheme | Turns | If it succeeds |
+| --- | --- | --- |
+| **Doomsday Device** | 5 | Their faction surges, hero factions lose ground, and the villain gains 3 levels |
+| **Mass Breakout** | 3 | Every imprisoned villain goes free |
+| **Hostile Takeover** | 4 | Their faction takes total control of the city |
+| **Raise an Army** | 4 | Two new super-powered lieutenants join them |
+
+Up to two schemes run at once. A scheme collapses if its mastermind is arrested, recruited or killed first.
+
 ### Power mastery
 Every attack or support power has a three-tier mastery tree. Each tier unlocks at a character level, and you pick one of two options (and can change picks any time):
 
@@ -252,6 +288,7 @@ tests/      Vitest: core logic, campaign rules and fuzzing, and a headless comba
 - **Hub, next steps:** comments, follows and creator profiles, remix credits, moderator tools, and cloud sync of your own library.
 - Cutscene camera moves, voiced barks, and companion banter based on relationships.
 - More enemy archetypes, elite modifiers, co-op heroes and team-up attacks.
+- Hero-side schemes and counter-plots, and combos that need three heroes.
 - Item sets with 2- and 4-piece bonuses, and signature mastery options unique to each power type.
 - Uploading imported model files to the hub so shared characters keep their look everywhere.
 - Packaging as an installable mobile/desktop app (PWA or Capacitor/Tauri).

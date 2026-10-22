@@ -13,6 +13,7 @@ import type { Effects } from './effects';
 import { idleAnim, type AnimState, type HeroModel } from './model';
 import { createHeroModel } from './models';
 import type { Sfx } from './audio';
+import { COMBO_COOLDOWN, COMBO_WINDOW as TEAM_COMBO_WINDOW, findCombo, type ComboRecipe } from './combos';
 
 export type Team = 'player' | 'enemy';
 export type Archetype = 'hero' | 'ally' | 'grunt' | 'gunner' | 'brute' | 'boss' | 'summon';
@@ -127,6 +128,9 @@ export class Actor {
   phase = 0;
   /** Invisible: enemies can't target it; the next hit lands double. */
   stealth = 0;
+  /** Team combos: the last power that hit this actor, waiting for a teammate's follow-up. */
+  mark: { power: Power; by: Actor; at: number } | null = null;
+  comboCooldown = 0;
   /** Summoned echoes fade away when this runs out. */
   summoned = false;
   life = 0;
@@ -231,6 +235,8 @@ interface Projectile {
   aoe: number;
   /** Web shots root whatever they hit. */
   web?: number;
+  /** The power that fired it (for team combos). */
+  power?: Power;
 }
 
 interface Channel {
@@ -252,6 +258,7 @@ interface Zone {
   tick: number;
   damage: number;
   element: Element;
+  power: Power;
 }
 
 const projectileGeo = new THREE.SphereGeometry(1, 10, 8);
@@ -284,6 +291,8 @@ export class Combat {
   onPerfectDodge: (a: Actor) => void = () => {};
   /** Sound cues; the session turns them into audio positioned around the camera. */
   onSound: (name: Sfx, pos: THREE.Vector3, element?: Element) => void = () => {};
+  /** A team combo went off: `first` set it up, `second` finished it. */
+  onCombo: (recipe: ComboRecipe, first: Actor, second: Actor, at: THREE.Vector3) => void = () => {};
 
   constructor(
     private readonly scene: THREE.Scene,
@@ -293,6 +302,15 @@ export class Combat {
 
   private sound(name: Sfx, pos: THREE.Vector3, element?: Element) {
     this.onSound(name, pos, element);
+  }
+
+  /** For systems layered on combat (boss phases). */
+  emitSound(name: Sfx, pos: THREE.Vector3, element?: Element) {
+    this.sound(name, pos, element);
+  }
+
+  get effects(): Effects {
+    return this.fx;
   }
 
   add(actor: Actor) {
@@ -329,6 +347,11 @@ export class Combat {
       }
     }
     return best;
+  }
+
+  /** Simulation time in seconds. */
+  get time(): number {
+    return this.clock;
   }
 
   schedule(delay: number, fn: () => void) {
@@ -616,7 +639,7 @@ export class Combat {
             const toT = target.center.sub(a.center).normalize();
             dir.y = toT.y;
           }
-          this.fireProjectile(a, dir, dmg, p.element, 26, 0.25 + p.potency * 0.02, 2 + p.potency * 0.2);
+          this.fireProjectile(a, dir, dmg, p.element, 26, 0.25 + p.potency * 0.02, 2 + p.potency * 0.2, 0, p);
         }
         break;
       }
@@ -632,7 +655,7 @@ export class Combat {
         this.fx.burst(a.center, color, 30, 14, 0.18);
         this.fx.shake(0.4);
         for (const e of this.enemiesOf(a)) {
-          if (e.pos.distanceTo(a.pos) <= radius + e.radius) this.damage(e, dmg, a, p.element, 12);
+          if (e.pos.distanceTo(a.pos) <= radius + e.radius) this.damage(e, dmg, a, p.element, 12, p);
         }
         break;
       }
@@ -712,7 +735,7 @@ export class Combat {
         for (const e of this.enemiesOf(a)) {
           seg.closestPointToPoint(e.center, true, closest);
           if (closest.distanceTo(e.center) <= e.radius + 0.5) {
-            this.damage(e, dmg, a, p.element, 9);
+            this.damage(e, dmg, a, p.element, 9, p);
             this.fx.burst(e.center, color, 8, 6);
           }
         }
@@ -722,7 +745,7 @@ export class Combat {
         a.castTimer = 0.25;
         const dir = fwd.clone();
         if (target) dir.y = target.center.sub(a.center).normalize().y;
-        this.fireProjectile(a, dir, dmg, p.element, 30, 0.3, 1.5, 2 + p.potency * 0.2);
+        this.fireProjectile(a, dir, dmg, p.element, 30, 0.3, 1.5, 2 + p.potency * 0.2, p);
         break;
       }
       case 'telekinesis': {
@@ -733,7 +756,7 @@ export class Combat {
         if (boss(t) || t.archetype === 'brute') {
           // Too heavy to lift: crush in place.
           t.stun = Math.max(t.stun, 0.4);
-          this.damage(t, dmg, a, p.element, 0);
+          this.damage(t, dmg, a, p.element, 0, p);
           this.fx.ring(t.pos, color, 2.5);
           break;
         }
@@ -745,7 +768,7 @@ export class Combat {
           t.lift = 0;
           t.vel.set(0, -32, 0);
           this.schedule(0.15, () => {
-            this.damage(t, dmg, a, p.element, 4);
+            this.damage(t, dmg, a, p.element, 4, p);
             this.fx.ring(t.pos, color, 3);
             this.fx.burst(t.pos.clone().setY(t.pos.y + 0.3), '#d8c8b0', 14, 8);
             this.sound('explosion', t.pos, p.element);
@@ -761,7 +784,7 @@ export class Combat {
         this.fx.flare(t.center, color, 2.5, 0.4);
         this.fx.ring(t.pos, '#ffffff', 3, 0.5);
         this.fx.burst(t.center, color, 24, 8, 0.16);
-        this.damage(t, dmg, a, p.element, 0);
+        this.damage(t, dmg, a, p.element, 0, p);
         if (!t.alive) break;
         // Minions sometimes get rewritten onto your side; everyone else shrinks.
         if (!boss(t) && t.archetype !== 'summon' && Math.random() < 0.3 + p.potency * 0.03) this.charm(t, a, 5 + p.potency * 0.4);
@@ -773,7 +796,7 @@ export class Combat {
         a.castTimer = 0.5;
         if (!t) break;
         this.fx.beam(a.center.add(new THREE.Vector3(0, 0.4, 0)), t.center, color, 0.06, 0.6);
-        this.damage(t, dmg, a, p.element, 0);
+        this.damage(t, dmg, a, p.element, 0, p);
         if (!t.alive) break;
         // Bosses and heroes resist: they're only stunned.
         if (boss(t) || t.archetype === 'hero' || t.archetype === 'ally') t.stun = Math.max(t.stun, boss(t) ? 1 : 1.2);
@@ -800,7 +823,7 @@ export class Combat {
         a.castTimer = 0.4;
         const at = target && target.pos.distanceTo(a.pos) < 22 ? target.pos.clone() : a.pos.clone().addScaledVector(fwd, 9);
         at.y = this.floorAt(at.x, at.z, at.y + 1);
-        this.zones.push({ owner: a, pos: at, radius: 4 + p.potency * 0.35, life: 3, tick: 0, damage: dmg, element: p.element });
+        this.zones.push({ owner: a, pos: at, radius: 4 + p.potency * 0.35, life: 3, tick: 0, damage: dmg, element: p.element, power: p });
         this.fx.flare(at.clone().setY(at.y + 1), '#120a24', 2, 0.5);
         break;
       }
@@ -819,7 +842,7 @@ export class Combat {
             this.fx.flare(at.clone().setY(at.y + 0.5), color, 2.2, 0.2);
             this.fx.ring(at, color, 2.6, 0.3);
             for (const e of this.enemiesOf(a)) {
-              if (e.pos.distanceTo(at) <= 2.4 + e.radius) this.damage(e, dmg, a, p.element, 3);
+              if (e.pos.distanceTo(at) <= 2.4 + e.radius) this.damage(e, dmg, a, p.element, 3, p);
             }
           });
         }
@@ -836,7 +859,7 @@ export class Combat {
           const time = boss(e) ? 0.8 + p.potency * 0.05 : 2 + p.potency * 0.2;
           e.frozen = Math.max(e.frozen, time);
           e.stun = Math.max(e.stun, time);
-          this.damage(e, dmg, a, p.element, 0);
+          this.damage(e, dmg, a, p.element, 0, p);
         }
         break;
       }
@@ -857,7 +880,7 @@ export class Combat {
           const d = to.length();
           if (d > range + e.radius || (d > 1 && to.normalize().dot(fwd) < 0.5)) continue;
           e.stun = Math.max(e.stun, boss(e) ? 0.2 : 0.8);
-          this.damage(e, dmg, a, p.element, 14);
+          this.damage(e, dmg, a, p.element, 14, p);
         }
         this.fx.shake(0.2);
         break;
@@ -905,7 +928,7 @@ export class Combat {
         this.schedule(0.25, () => {
           t.vel.x *= 0.1;
           t.vel.z *= 0.1;
-          this.damage(t, dmg, a, p.element, 0);
+          this.damage(t, dmg, a, p.element, 0, p);
         });
         break;
       }
@@ -967,7 +990,7 @@ export class Combat {
     return true;
   }
 
-  fireProjectile(owner: Actor, dir: THREE.Vector3, damage: number, element: Element, speed: number, size: number, aoe = 0, web = 0) {
+  fireProjectile(owner: Actor, dir: THREE.Vector3, damage: number, element: Element, speed: number, size: number, aoe = 0, web = 0, power?: Power) {
     const color = ELEMENT_COLORS[element];
     const mat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.95, blending: THREE.AdditiveBlending, depthWrite: false });
     const mesh = new THREE.Mesh(projectileGeo, mat);
@@ -988,6 +1011,7 @@ export class Combat {
       radius: size,
       aoe,
       web,
+      power,
     });
     if (web) mat.color.set('#f4f4ff');
   }
@@ -996,7 +1020,11 @@ export class Combat {
   slam(a: Actor, radius: number, windup: number, raw: number, element: Element = 'kinetic') {
     a.castTimer = windup;
     a.anim.cast = 0;
-    const at = a.pos.clone();
+    this.strike(a, a.pos.clone(), radius, windup, raw, element);
+  }
+
+  /** A telegraphed area attack at any spot: a warning circle, then the hit. */
+  strike(a: Actor, at: THREE.Vector3, radius: number, windup: number, raw: number, element: Element = 'kinetic') {
     this.fx.telegraph(at, radius, windup);
     this.schedule(windup, () => {
       if (!a.alive) return;
@@ -1012,8 +1040,11 @@ export class Combat {
 
   // --- Damage --------------------------------------------------------------
 
-  /** Applies a hit and returns the damage dealt (0 if it was avoided). */
-  damage(target: Actor, raw: number, source: Actor | null, element: Element | null, knockback = 0): number {
+  /**
+   * Applies a hit and returns the damage dealt (0 if it was avoided). `via` is
+   * the power that landed it, which marks the target for team combos.
+   */
+  damage(target: Actor, raw: number, source: Actor | null, element: Element | null, knockback = 0, via?: Power): number {
     if (target.alive && target.invuln > 0 && target.perfectWindow > 0 && source && source.team !== target.team) {
       target.perfectWindow = 0;
       this.onPerfectDodge(target);
@@ -1068,8 +1099,46 @@ export class Combat {
       target.attackTimer = 0;
     }
 
+    if (via && source && target.hp > 0) this.comboCheck(target, source, via);
     if (target.hp <= 0) this.kill(target, source);
     return dealt;
+  }
+
+  /** Marks the target, or detonates a combo if a teammate's mark is waiting. */
+  private comboCheck(target: Actor, source: Actor, via: Power) {
+    const m = target.mark;
+    if (m && m.by !== source && m.by.team === source.team && m.by.alive && this.clock - m.at <= TEAM_COMBO_WINDOW && target.comboCooldown <= 0) {
+      const recipe = findCombo(m.power, via);
+      if (recipe) {
+        target.mark = null;
+        target.comboCooldown = COMBO_COOLDOWN;
+        this.detonate(recipe, target, m.by, source, via.element);
+        return;
+      }
+    }
+    target.mark = { power: via, by: source, at: this.clock };
+  }
+
+  private detonate(recipe: ComboRecipe, target: Actor, first: Actor, second: Actor, element: Element) {
+    const at = target.pos.clone();
+    const raw = basicDamage(second.stats, second.level) * 2 * recipe.mult * this.powerScale;
+    if (recipe.delay) this.fx.telegraph(at, recipe.radius, recipe.delay, recipe.color);
+    this.schedule(recipe.delay, () => {
+      const center = target.alive ? target.pos.clone() : at;
+      this.fx.flare(center.clone().setY(center.y + 1), recipe.color, recipe.radius * 0.6, 0.45);
+      this.fx.ring(center, recipe.color, recipe.radius * 1.15, 0.6);
+      this.fx.ring(center, '#ffffff', recipe.radius * 0.6, 0.4);
+      this.fx.burst(center.clone().setY(center.y + 1), recipe.color, 40, 14, 0.2);
+      this.fx.shake(0.6);
+      this.sound('explosion', center, element);
+      this.sound('perfect', center);
+      for (const e of this.enemiesOf(second)) {
+        if (e.pos.distanceTo(center) > recipe.radius + e.radius) continue;
+        if (recipe.stun) e.stun = Math.max(e.stun, e.archetype === 'boss' ? recipe.stun * 0.3 : recipe.stun);
+        this.damage(e, raw, second, element, 10);
+      }
+    });
+    this.onCombo(recipe, first, second, at);
   }
 
   private kill(target: Actor, source: Actor | null) {
@@ -1233,6 +1302,12 @@ export class Combat {
   }
 
   private updateStatuses(a: Actor, dt: number) {
+    a.comboCooldown = Math.max(0, a.comboCooldown - dt);
+    if (a.mark) {
+      if (this.clock - a.mark.at > TEAM_COMBO_WINDOW || !a.alive) a.mark = null;
+      // A flickering marker shows teammates the target is primed.
+      else if (Math.random() < dt * 5) this.fx.burst(a.center.add(new THREE.Vector3(0, 1.1 * a.model.root.scale.y, 0)), ELEMENT_COLORS[a.mark.power.element], 2, 1.2, 0.1);
+    }
     a.root = Math.max(0, a.root - dt);
     a.frozen = Math.max(0, a.frozen - dt);
     a.shrink = Math.max(0, a.shrink - dt);
@@ -1343,7 +1418,7 @@ export class Combat {
     for (const e of this.enemiesOf(a)) {
       if (!a.dashHits.has(e) && e.pos.distanceTo(a.pos) < e.radius + a.radius + 1.2) {
         a.dashHits.add(e);
-        this.damage(e, a.dashDamage, a, a.dashPower.element, 10);
+        this.damage(e, a.dashDamage, a, a.dashPower.element, 10, a.dashPower);
         this.fx.burst(e.center, color, 10, 8);
       }
     }
@@ -1419,7 +1494,7 @@ export class Combat {
         const radius = Math.max(p.aoe, 1.2);
         for (const e of this.enemiesOf(p.owner)) {
           if (e.center.distanceTo(pos) > radius + e.radius) continue;
-          this.damage(e, p.damage, p.owner, p.element, p.web ? 0 : 5);
+          this.damage(e, p.damage, p.owner, p.element, p.web ? 0 : 5, p.power);
           if (p.web) {
             e.root = Math.max(e.root, e.archetype === 'boss' ? p.web * 0.35 : p.web);
             e.slow = Math.max(e.slow, p.web + 1);
@@ -1458,7 +1533,7 @@ export class Combat {
           if (t) {
             this.fx.beam(t.center, a.center, ELEMENT_COLORS[c.power.element], 0.1, 0.2);
             this.fx.burst(a.center, ELEMENT_COLORS[c.power.element], 2, 2, 0.1);
-            const dealt = this.damage(t, c.damage, a, c.power.element, 0);
+            const dealt = this.damage(t, c.damage, a, c.power.element, 0, c.power);
             this.heal(a, dealt * 0.6);
           }
         }
@@ -1479,7 +1554,7 @@ export class Combat {
         const closest = new THREE.Vector3();
         for (const e of this.enemiesOf(a)) {
           seg.closestPointToPoint(e.center, true, closest);
-          if (closest.distanceTo(e.center) <= e.radius + width + 0.5) this.damage(e, c.damage, a, c.power.element, 1);
+          if (closest.distanceTo(e.center) <= e.radius + width + 0.5) this.damage(e, c.damage, a, c.power.element, 1, c.power);
         }
       }
       if (c.remaining <= 0) this.channels.splice(i, 1);
@@ -1504,7 +1579,7 @@ export class Combat {
         this.fx.ring(z.pos, color, z.radius, 0.5);
         this.fx.ring(z.pos, '#120a24', z.radius * 0.5, 0.4);
         for (const e of this.enemiesOf(z.owner)) {
-          if (e.pos.distanceTo(z.pos) <= z.radius + e.radius) this.damage(e, z.damage, z.owner, z.element, 0);
+          if (e.pos.distanceTo(z.pos) <= z.radius + e.radius) this.damage(e, z.damage, z.owner, z.element, 0, z.power);
         }
       }
       if (z.life <= 0 || !z.owner.alive) this.zones.splice(i, 1);

@@ -278,6 +278,11 @@ export class Hud {
   }
   private bossTarget: Actor | null = null;
 
+  /** Re-reads a boss's title (phase changes) if it's the one on the bar. */
+  refreshBoss(boss: Actor) {
+    if (this.bossTarget === boss) this.setBoss(boss);
+  }
+
   addCombo() {
     this.combo++;
     this.maxCombo = Math.max(this.maxCombo, this.combo);

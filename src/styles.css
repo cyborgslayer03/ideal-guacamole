@@ -616,3 +616,14 @@ input[type='password']:focus, input[type='search']:focus { outline: none; border
 .mastery-badge { color: var(--gold); font-weight: 700; }
 .gear .item-perk { font-size: 0.75rem; }
 .btn:disabled { opacity: 0.4; cursor: not-allowed; filter: saturate(0.4); }
+
+/* --- Villain schemes -------------------------------------------------------- */
+.schemes { border-color: rgba(255, 42, 85, 0.5); }
+.scheme { display: grid; gap: 4px; padding: 8px 0; border-bottom: 1px solid var(--line); }
+.scheme:last-child { border-bottom: 0; }
+.scheme-head { display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.scheme-left { color: #ff6a85; font-weight: 700; font-family: var(--font-display); }
+.scheme.urgent .scheme-left { animation: pulse 0.6s ease-in-out infinite alternate; color: #ff2a55; }
+.scheme-bar { height: 6px; background: rgba(255, 255, 255, 0.08); }
+.scheme-bar > div { height: 100%; background: linear-gradient(90deg, #ff8a3e, #ff2a55); }
+.news-scheme .news-icon { color: #ff2a55; }

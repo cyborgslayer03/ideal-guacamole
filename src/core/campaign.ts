@@ -52,7 +52,7 @@ export interface StoryProgress {
   done: boolean;
 }
 
-export type NewsKind = 'mission' | 'succession' | 'nemesis' | 'ally' | 'escape' | 'faction' | 'story' | 'betrayal' | 'contract' | 'loot';
+export type NewsKind = 'mission' | 'succession' | 'nemesis' | 'ally' | 'escape' | 'faction' | 'story' | 'betrayal' | 'contract' | 'loot' | 'scheme';
 
 export interface NewsItem {
   turn: number;
@@ -74,9 +74,31 @@ export interface Campaign {
   contractsDone: string[];
   /** Upgrade currency from salvaged gear. */
   shards: number;
+  /** Villain plots counting down on the War Table. */
+  schemes: Scheme[];
 }
 
-export type MissionKind = 'story' | 'patrol' | 'raid' | 'hunt' | 'vendetta' | 'ally' | 'defense' | 'teamup';
+export type SchemeKind = 'doomsday' | 'jailbreak' | 'takeover' | 'army';
+
+export interface Scheme {
+  id: string;
+  kind: SchemeKind;
+  villainId: string;
+  factionId: string | null;
+  locationId: string;
+  /** Turns until it succeeds. */
+  left: number;
+  total: number;
+}
+
+export const SCHEME_META: Record<SchemeKind, { title: string; turns: number; goal: string; threat: string }> = {
+  doomsday: { title: 'Doomsday Device', turns: 5, goal: 'Fight through the guards', threat: 'devastates the city: their faction surges and the villain grows far stronger' },
+  jailbreak: { title: 'Mass Breakout', turns: 3, goal: 'Stop the breakout', threat: 'frees every imprisoned villain' },
+  takeover: { title: 'Hostile Takeover', turns: 4, goal: 'Retake the streets', threat: 'gives their faction total control of the city' },
+  army: { title: 'Raise an Army', turns: 4, goal: 'Break up the recruitment', threat: 'adds two new super-powered lieutenants to their faction' },
+};
+
+export type MissionKind = 'story' | 'patrol' | 'raid' | 'hunt' | 'vendetta' | 'ally' | 'defense' | 'teamup' | 'scheme';
 
 export interface Mission {
   id: string;
@@ -100,6 +122,8 @@ export interface Mission {
   ambushId: string | null;
   /** Team-up missions: the hero faction that assembles for it. */
   teamId: string | null;
+  /** Scheme missions: the plot this mission can foil. */
+  schemeId: string | null;
 }
 
 const MAX_NEWS = 60;
@@ -138,6 +162,7 @@ export function createCampaign(u: Universe): Campaign {
     news: [{ turn: 1, kind: 'faction', text: 'The War Table is online. Choose your first mission.' }],
     contractsDone: [],
     shards: 0,
+    schemes: [],
   };
   syncCampaign(c, u);
   return c;
@@ -164,7 +189,8 @@ export function syncCampaign(c: Campaign, u: Universe) {
   // Characters newly assigned to a faction in the creator join as lieutenants.
   for (const ch of u.characters) {
     const fs = ch.factionId ? c.factions[ch.factionId] : undefined;
-    if (fs && !placed.has(ch.id) && c.relations[ch.id].state !== 'recruited') {
+    // Only free characters take up a post: prisoners and the fallen stay out.
+    if (fs && !placed.has(ch.id) && c.relations[ch.id].state === 'free') {
       if (!fs.leaderId) fs.leaderId = ch.id;
       else fs.lieutenantIds.push(ch.id);
     }
@@ -174,6 +200,12 @@ export function syncCampaign(c: Campaign, u: Universe) {
     c.stories[s.id] ??= { chapter: nextChapterIndex(s, 0, c.flags) ?? 0, done: s.chapters.length === 0 };
   }
   for (const id of Object.keys(c.stories)) if (!u.stories.some((s) => s.id === id)) delete c.stories[id];
+}
+
+function validScheme(x: unknown): x is Scheme {
+  const o = x as Scheme;
+  return !!o && typeof o === 'object' && typeof o.id === 'string' && o.kind in SCHEME_META && typeof o.villainId === 'string'
+    && typeof o.locationId === 'string' && Number.isInteger(o.left) && Number.isInteger(o.total) && o.left > 0 && o.left <= o.total;
 }
 
 /** Parses a saved campaign; anything unusable starts a fresh campaign. */
@@ -194,6 +226,7 @@ export function loadCampaign(raw: unknown, u: Universe): Campaign {
     news: Array.isArray(o.news) ? o.news.slice(0, MAX_NEWS) : [],
     contractsDone: Array.isArray(o.contractsDone) ? o.contractsDone.filter((x): x is string => typeof x === 'string').slice(-200) : [],
     shards: typeof o.shards === 'number' && Number.isFinite(o.shards) ? clamp(Math.floor(o.shards), 0, 1e7) : 0,
+    schemes: Array.isArray(o.schemes) ? o.schemes.filter(validScheme).slice(0, 4).map((x) => ({ ...x })) : [],
   };
   for (const [id, r] of Object.entries(o.relations as Record<string, Relationship>)) {
     if (!r || typeof r !== 'object') continue;
@@ -308,7 +341,7 @@ export function missionBoard(c: Campaign, u: Universe): Mission[] {
   const locId = () => (u.locations.length ? rng.pick(u.locations).id : '');
   const name = (id: string) => u.characters.find((x) => x.id === id)?.alias ?? 'Unknown';
   const factionName = (id: string | null) => u.factions.find((f) => f.id === id)?.name ?? 'Unknown forces';
-  const add = (m: Omit<Mission, 'id' | 'level' | 'xp' | 'rewardItemId' | 'storyId' | 'chapter' | 'allyId' | 'ambushId' | 'teamId'> & Partial<Mission>) => {
+  const add = (m: Omit<Mission, 'id' | 'level' | 'xp' | 'rewardItemId' | 'storyId' | 'chapter' | 'allyId' | 'ambushId' | 'teamId' | 'schemeId'> & Partial<Mission>) => {
     const level = m.level ?? clamp(base + m.difficulty - 2, 1, MAX_LEVEL);
     missions.push({
       id: `${m.kind}:${c.turn}:${missions.length}`,
@@ -320,6 +353,7 @@ export function missionBoard(c: Campaign, u: Universe): Mission[] {
       allyId: null,
       ambushId: null,
       teamId: null,
+      schemeId: null,
       ...m,
     });
   };
@@ -327,6 +361,24 @@ export function missionBoard(c: Campaign, u: Universe): Mission[] {
     const pool = u.items.filter((i) => i.rarity !== 'common');
     return pool.length ? rng.pick(pool).id : null;
   };
+
+  // Villain schemes come first: they're on a clock.
+  for (const sc of c.schemes) {
+    const villain = u.characters.find((x) => x.id === sc.villainId);
+    if (!villain) continue;
+    const meta = SCHEME_META[sc.kind];
+    add({
+      kind: 'scheme',
+      title: `Stop the ${meta.title}`,
+      brief: `${villain.alias}'s plot succeeds in ${sc.left} ${sc.left === 1 ? 'turn' : 'turns'}: it ${meta.threat}.`,
+      locationId: u.locations.some((l) => l.id === sc.locationId) ? sc.locationId : locId(),
+      factionId: sc.factionId,
+      targetIds: [villain.id],
+      difficulty: sc.left <= 1 ? 5 : 4,
+      rewardItemId: rareLoot(),
+      schemeId: sc.id,
+    });
+  }
 
   // Story chapters, with bosses swapped for whoever holds their position now.
   for (const s of u.stories) {
@@ -586,6 +638,19 @@ export function planMission(c: Campaign, u: Universe, m: Mission, heroId: string
       intro.push(...barks(c, u, leader, heroName));
       break;
     }
+    case 'scheme': {
+      const sc = c.schemes.find((x) => x.id === m.schemeId);
+      const meta = SCHEME_META[sc?.kind ?? 'doomsday'];
+      const villain = m.targetIds[0];
+      phases = [
+        { kind: 'defeat', count: 10, label: meta.goal },
+        { kind: 'survive', seconds: 30, label: `Sabotage the ${meta.title}` },
+        { kind: 'bosses', bossIds: [villain], minions: true, label: `Defeat ${name(villain)}` },
+      ];
+      intro.push(...barks(c, u, villain, heroName));
+      outro = [{ speaker: 'Command', text: `The ${meta.title} is finished. Good work, ${heroName}.` }];
+      break;
+    }
     case 'hunt':
     case 'vendetta':
       phases = [{ kind: 'bosses', bossIds: m.targetIds, minions: true }];
@@ -829,7 +894,7 @@ function applyOutcome(c: Campaign, u: Universe, rng: Rng, news: Chronicle, bossI
   if (vacated && fid && faction) succession(c, u, rng, news, fid, boss, outcome, hero.id);
 }
 
-const KIND_POWER_HIT: Record<MissionKind, number> = { story: 10, patrol: 6, raid: 25, hunt: 8, vendetta: 6, ally: 5, defense: 15, teamup: 30 };
+const KIND_POWER_HIT: Record<MissionKind, number> = { story: 10, patrol: 6, raid: 25, hunt: 8, vendetta: 6, ally: 5, defense: 15, teamup: 30, scheme: 20 };
 
 /**
  * Applies a finished mission to the world, advances time, and returns what
@@ -850,6 +915,12 @@ export function resolveMission(c: Campaign, u: Universe, m: Mission, result: Mis
       shiftScore(c, u, news, m.allyId, 25);
     }
     if (m.kind === 'story' && m.storyId) applyStoryChoice(c, u, news, m.storyId, m.chapter, result.choice);
+    const foiled = c.schemes.find((x) => x.id === m.schemeId);
+    if (foiled) {
+      c.schemes = c.schemes.filter((x) => x !== foiled);
+      remember(c, foiled.villainId, `had their ${SCHEME_META[foiled.kind].title} foiled by ${hero.alias}`);
+      news.add('scheme', `${hero.alias} foiled the ${SCHEME_META[foiled.kind].title}!`);
+    }
     if (result.ambient?.completed) {
       news.add('mission', `${hero.alias} handled ${result.ambient.completed} ${result.ambient.completed === 1 ? 'incident' : 'incidents'} along the way.`);
       if (m.factionId && c.factions[m.factionId]) c.factions[m.factionId].power = clamp(c.factions[m.factionId].power - Math.min(10, result.ambient.completed * 2), 0, 100);
@@ -860,6 +931,12 @@ export function resolveMission(c: Campaign, u: Universe, m: Mission, result: Mis
     }
   } else {
     news.add('mission', `${hero.alias} was defeated during “${m.title}”.`);
+    // A failed attempt buys the villain time.
+    const sc = c.schemes.find((x) => x.id === m.schemeId);
+    if (sc && sc.left > 1) {
+      sc.left--;
+      news.add('scheme', `The ${SCHEME_META[sc.kind].title} speeds up after the setback.`);
+    }
     for (const bossId of result.survivingBossIds) {
       const boss = u.characters.find((x) => x.id === bossId);
       const r = c.relations[bossId];
@@ -895,7 +972,7 @@ export function resolveMission(c: Campaign, u: Universe, m: Mission, result: Mis
 
 // --- Loot and the Armory ------------------------------------------------------------
 
-const LOOT_DROPS: Record<MissionKind, number> = { story: 1, patrol: 0, raid: 2, hunt: 1, vendetta: 1, ally: 0, defense: 0, teamup: 1 };
+const LOOT_DROPS: Record<MissionKind, number> = { story: 1, patrol: 0, raid: 2, hunt: 1, vendetta: 1, ally: 0, defense: 0, teamup: 1, scheme: 2 };
 const GRADE_LUCK: Record<string, number> = { S: 0.6, A: 0.35, B: 0.15, C: 0 };
 
 /** Gear dropped by a won mission: more and better for harder missions and higher grades. */
@@ -930,7 +1007,7 @@ export function upgradeItem(c: Campaign, u: Universe, itemId: string): boolean {
 
 // --- Contracts -------------------------------------------------------------------
 
-export type ContractKind = 'teamup' | 'arrest' | 'spare' | 'rescue' | 'raid' | 'grade' | 'incidents' | 'patrol' | 'squad';
+export type ContractKind = 'teamup' | 'arrest' | 'spare' | 'rescue' | 'raid' | 'grade' | 'incidents' | 'patrol' | 'squad' | 'combo';
 
 export interface Contract {
   id: string;
@@ -950,6 +1027,7 @@ const CONTRACTS: Record<ContractKind, Omit<Contract, 'id' | 'kind'>> = {
   incidents: { title: 'Busy Night', detail: 'Handle 3 incidents in one patrol.', xp: 400 },
   patrol: { title: 'Beat Cop', detail: 'Complete a patrol.', xp: 200 },
   squad: { title: 'Strength in Numbers', detail: 'Win a mission with a squad of 3 or more heroes.', xp: 350 },
+  combo: { title: 'Synergy', detail: 'Trigger 3 team combos in one mission.', xp: 450 },
 };
 
 /** Three contracts that rotate every three turns (deterministic per campaign). */
@@ -980,6 +1058,8 @@ function contractMet(kind: ContractKind, m: Mission, r: MissionResult): boolean 
       return m.kind === 'patrol';
     case 'squad':
       return (r.squadIds?.length ?? 0) >= 2;
+    case 'combo':
+      return (r.combos ?? 0) >= 3;
   }
 }
 
@@ -1039,6 +1119,7 @@ export function advanceWorld(c: Campaign, u: Universe, rng: Rng, news: Chronicle
     const faction = u.factions.find((f) => f.id === ch.factionId);
     if (fs && faction) {
       const current = fs.leaderId ? byId(fs.leaderId) : undefined;
+      fs.lieutenantIds = fs.lieutenantIds.filter((id) => id !== ch.id);
       if (!current || cp(ch) > cp(current)) {
         if (current) fs.lieutenantIds.push(current.id);
         fs.leaderId = ch.id;
@@ -1049,6 +1130,8 @@ export function advanceWorld(c: Campaign, u: Universe, rng: Rng, news: Chronicle
       }
     } else news.add('escape', `${ch.alias} escaped from prison!`);
   }
+
+  tickSchemes(c, u, rng, news);
 
   // Coups: a lieutenant who outgrows their boss may take over.
   for (const f of u.factions) {
@@ -1061,6 +1144,104 @@ export function advanceWorld(c: Campaign, u: Universe, rng: Rng, news: Chronicle
       s.leaderId = rival.id;
       remember(c, rival.id, `overthrew ${leader.alias}`);
       news.add('succession', `${rival.alias} overthrew ${leader.alias} and now leads ${f.name}!`);
+    }
+  }
+}
+
+// --- Villain schemes ---------------------------------------------------------------
+
+const MAX_SCHEMES = 2;
+
+/** Counts schemes down, resolves the ones that run out, and lets villains start new ones. */
+function tickSchemes(c: Campaign, u: Universe, rng: Rng, news: Chronicle) {
+  const byId = (id: string) => u.characters.find((x) => x.id === id);
+  for (const sc of [...c.schemes]) {
+    const villain = byId(sc.villainId);
+    const meta = SCHEME_META[sc.kind];
+    if (!villain || !isHostile(c, villain) || c.relations[villain.id]?.state !== 'free') {
+      c.schemes = c.schemes.filter((x) => x !== sc);
+      news.add('scheme', `The ${meta.title} falls apart without ${villain?.alias ?? 'its mastermind'}.`);
+      continue;
+    }
+    sc.left--;
+    if (sc.left > 0) {
+      if (sc.left === 1) news.add('scheme', `⚠ ${villain.alias}'s ${meta.title} completes next turn!`);
+      continue;
+    }
+    c.schemes = c.schemes.filter((x) => x !== sc);
+    executeScheme(c, u, rng, news, sc, villain);
+  }
+
+  if (c.schemes.length >= MAX_SCHEMES || !rng.chance(0.35)) return;
+  const busy = new Set(c.schemes.map((x) => x.villainId));
+  const candidates = u.characters
+    .filter((ch) => isHostile(c, ch) && c.relations[ch.id]?.state === 'free' && !busy.has(ch.id))
+    .filter((ch) => Object.values(c.factions).some((f) => f.leaderId === ch.id) || bond(relationOf(c, ch.id)) === 'nemesis')
+    .sort((a, b) => combatPower(b, u.items) - combatPower(a, u.items));
+  const villain = candidates[0];
+  if (!villain) return;
+  const anyoneJailed = u.characters.some((ch) => c.relations[ch.id]?.state === 'imprisoned' && ch.role === 'villain');
+  const kinds: SchemeKind[] = ['doomsday', 'takeover', 'army', ...(anyoneJailed ? ['jailbreak', 'jailbreak'] as const : [])];
+  const kind = rng.pick(kinds);
+  const meta = SCHEME_META[kind];
+  const scheme: Scheme = {
+    id: `sch:${c.turn}:${hash(villain.id) % 100000}`,
+    kind,
+    villainId: villain.id,
+    factionId: villain.factionId,
+    locationId: u.locations.length ? rng.pick(u.locations).id : '',
+    left: meta.turns,
+    total: meta.turns,
+  };
+  c.schemes.push(scheme);
+  remember(c, villain.id, `began the ${meta.title}`);
+  news.add('scheme', `${villain.alias} has begun the ${meta.title}! Stop it within ${meta.turns} turns or it ${meta.threat}.`);
+}
+
+function executeScheme(c: Campaign, u: Universe, rng: Rng, news: Chronicle, sc: Scheme, villain: Character) {
+  const fs = sc.factionId ? c.factions[sc.factionId] : undefined;
+  const faction = u.factions.find((f) => f.id === sc.factionId);
+  const where = u.locations.find((l) => l.id === sc.locationId)?.name ?? 'the city';
+  remember(c, villain.id, `completed the ${SCHEME_META[sc.kind].title}`);
+  switch (sc.kind) {
+    case 'doomsday':
+      if (fs) fs.power = clamp(fs.power + 30, 0, 100);
+      for (const f of u.factions) if (f.alignment === 'hero' && c.factions[f.id]) c.factions[f.id].power = clamp(c.factions[f.id].power - 15, 0, 100);
+      levelUp(villain, 3);
+      news.add('scheme', `💥 The Doomsday Device devastated ${where}! ${villain.alias} grows stronger (Lv ${villain.level}).`);
+      break;
+    case 'jailbreak': {
+      const freed = u.characters.filter((ch) => c.relations[ch.id]?.state === 'imprisoned');
+      for (const ch of freed) {
+        c.relations[ch.id].state = 'free';
+        remember(c, ch.id, `was broken out by ${villain.alias}`);
+        const home = ch.factionId ? c.factions[ch.factionId] : undefined;
+        if (home && home.leaderId !== ch.id && !home.lieutenantIds.includes(ch.id)) home.lieutenantIds.push(ch.id);
+      }
+      news.add('scheme', `💥 ${villain.alias}'s Mass Breakout freed ${freed.length ? freed.map((x) => x.alias).join(', ') : 'the whole cell block'}!`);
+      break;
+    }
+    case 'takeover':
+      if (fs) fs.power = 100;
+      if (fs && faction && fs.leaderId !== villain.id && villain.factionId === faction.id) {
+        if (fs.leaderId) fs.lieutenantIds.push(fs.leaderId);
+        fs.lieutenantIds = fs.lieutenantIds.filter((id) => id !== villain.id);
+        fs.leaderId = villain.id;
+      }
+      news.add('scheme', `💥 ${villain.alias} seized ${where}: ${faction?.name ?? 'their gang'} now controls the city!`);
+      break;
+    case 'army': {
+      const recruits = [0, 1].map(() => {
+        const ch = randomCharacter(rng, 'villain', villain.factionId);
+        ch.id = `chr_army${rng.int(0, 2 ** 30).toString(36)}`;
+        levelUp(ch, Math.max(0, villain.level - 2));
+        return ch;
+      });
+      u.characters.push(...recruits);
+      syncCampaign(c, u);
+      if (fs) for (const r of recruits) if (!fs.lieutenantIds.includes(r.id) && fs.leaderId !== r.id) fs.lieutenantIds.push(r.id);
+      news.add('scheme', `💥 ${villain.alias} raised an army: ${recruits.map((x) => x.alias).join(' and ')} joined ${faction?.name ?? 'the cause'}.`);
+      break;
     }
   }
 }

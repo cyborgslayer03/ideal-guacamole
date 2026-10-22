@@ -2,7 +2,7 @@
 // selection, faction hierarchies, relationships, and the world chronicle.
 
 import {
-  activeContracts, availableAllies, bond, factionOf, isHostile, missionSquad, missionBoard, passTime, playableHeroes, relationOf,
+  SCHEME_META, activeContracts, availableAllies, bond, factionOf, isHostile, missionSquad, missionBoard, passTime, playableHeroes, relationOf,
   type Bond, type Mission, type MissionKind, type NewsItem,
 } from '../../core/campaign';
 import { RARITY_COLORS, combatPower, ELEMENT_COLORS } from '../../core/rules';
@@ -21,6 +21,7 @@ const KIND_META: Record<MissionKind, { label: string; color: string; icon: strin
   ally: { label: 'Ally', color: '#3eff8b', icon: '✚' },
   defense: { label: 'Defense', color: '#3e9bff', icon: '⛨' },
   teamup: { label: 'Team-Up', color: '#ff3e8a', icon: '⚡' },
+  scheme: { label: 'Scheme', color: '#ff2a55', icon: '⏳' },
 };
 
 const BOND_COLORS: Record<Bond, string> = {
@@ -32,7 +33,7 @@ const BOND_COLORS: Record<Bond, string> = {
 };
 
 const NEWS_ICONS: Record<NewsItem['kind'], string> = {
-  contract: '✔', loot: '◈',
+  contract: '✔', loot: '◈', scheme: '⏳',
   mission: '◆', succession: '♛', nemesis: '⚔', ally: '✚', escape: '⛓', faction: '⚑', story: '✎', betrayal: '⚠',
 };
 
@@ -129,6 +130,24 @@ export function playTab(ctx: EditorContext): HTMLElement {
     h('div', { class: 'muted small' }, `New contracts in ${3 - ((c.turn - 1) % 3)} turn${3 - ((c.turn - 1) % 3) === 1 ? '' : 's'}`),
   );
 
+  // --- Villain schemes on the clock.
+  const schemes = c.schemes.length > 0 && h('section', { class: 'panel schemes' },
+    h('h3', { class: 'panel-title' }, 'Villain Schemes'),
+    ...c.schemes.map((sc) => {
+      const villain = u.characters.find((x) => x.id === sc.villainId);
+      const meta = SCHEME_META[sc.kind];
+      const urgent = sc.left <= 1;
+      return h('div', { class: `scheme${urgent ? ' urgent' : ''}` },
+        h('div', { class: 'scheme-head' },
+          h('b', null, `${villain?.alias ?? 'Unknown'}: ${meta.title}`),
+          h('span', { class: 'scheme-left' }, urgent ? 'NEXT TURN!' : `${sc.left} turns left`),
+        ),
+        h('div', { class: 'scheme-bar' }, h('div', { style: `width:${Math.round(((sc.total - sc.left) / sc.total) * 100)}%` })),
+        h('div', { class: 'muted small' }, `If it succeeds, it ${meta.threat}. Every mission or time skip moves the clock.`),
+      );
+    }),
+  );
+
   // --- Mission board.
   const missions = missionBoard(c, u);
   const board = h('div', { class: 'board' },
@@ -185,6 +204,7 @@ export function playTab(ctx: EditorContext): HTMLElement {
     companionRow,
     h('h3', { class: 'panel-title' }, 'Contracts'),
     contracts,
+    schemes,
     h('h3', { class: 'panel-title' }, 'Missions'),
     board,
     armoryPanel(ctx, hero ?? null),

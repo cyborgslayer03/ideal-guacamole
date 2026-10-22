@@ -222,6 +222,12 @@ export function squadRole(a: Actor): SquadRole {
   return 'striker';
 }
 
+/** True if a teammate's power marked this enemy recently, so a follow-up power would combo. */
+export function comboReady(a: Actor, e: Actor, combat: Combat): boolean {
+  const m = e.mark;
+  return !!m && m.by !== a && m.by.team === a.team && combat.time - m.at < 2.5 && e.comboCooldown <= 0;
+}
+
 /** Picks an enemy, spreading the squad out (except on bosses, which everyone may pile onto). */
 function chooseTarget(a: Actor, combat: Combat, role: SquadRole, ctx: SquadContext, leader: Actor): Actor | null {
   if (ctx.order === 'focus' && ctx.focus?.alive) return ctx.focus;
@@ -238,6 +244,8 @@ function chooseTarget(a: Actor, combat: Combat, role: SquadRole, ctx: SquadConte
     if (role === 'ranged' && e.archetype === 'gunner') s -= 6;
     // Peel enemies off the leader.
     if (e.pos.distanceTo(leader.pos) < 4) s -= 5;
+    // Jump on enemies a teammate just primed for a combo.
+    if (comboReady(a, e, combat)) s -= 10;
     return s;
   };
   return enemies.sort((x, y) => score(x) - score(y))[0];
@@ -300,9 +308,11 @@ export function updateAlly(a: Actor, combat: Combat, dt: number, leader: Actor, 
   if (role !== 'ranged' && useTravel(a, combat, dt, gap, target.pos, target)) return;
   if (!a.busy) {
     const ready = a.skills.map((_, i) => i).filter((i) => combat.canCast(a, i));
-    if (ready.length && cooldown(a, 'power', dt) <= 0) {
+    // A primed target is worth a power right now, cooldown pacing or not.
+    const combo = comboReady(a, target, combat) && gap < 18;
+    if (ready.length && (cooldown(a, 'power', dt) <= 0 || combo)) {
       const slot = ready[Math.floor(Math.random() * ready.length)];
-      if (powerUseful(a, a.skills[slot].power.kind, gap)) {
+      if (combo || powerUseful(a, a.skills[slot].power.kind, gap)) {
         a.faceToward(target.pos);
         if (combat.castPower(a, slot)) {
           a.ai.power = (role === 'ranged' ? 1.5 : 2.5) + Math.random() * 1.5;
