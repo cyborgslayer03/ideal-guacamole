@@ -7,7 +7,7 @@ import {
   rollDamage, energyRegen, speedMultiplier, teleportRange,
 } from '../core/rules';
 import { isMovement, type Appearance, type Character, type Element, type Power, type Stats } from '../core/types';
-import { ARENA_RADIUS, type Obstacle } from './arena';
+import { ARENA_RADIUS, THIN, floorAt, type Obstacle } from './arena';
 import type { Effects } from './effects';
 import { CharacterModel, idleAnim, type AnimState } from './model';
 
@@ -73,8 +73,10 @@ export class Actor {
   ultimate = 0;
   /** Seconds since this actor last took damage; drives HUD and AI. */
   sinceHit = 99;
-  /** Shown before the name on boss bars, e.g. "Nemesis". */
+  /** Shown before the name on boss bars, e.g. "Nemesis" or "Elite". */
   title = '';
+  /** Multiplies all damage this actor deals (threat tiers, elites). */
+  damageMult = 1;
   /** Free-form per-archetype AI memory. */
   ai: Record<string, number> = {};
   shieldMesh: THREE.Mesh | null = null;
@@ -264,16 +266,21 @@ export class Combat {
     const from = a.pos.clone();
     const to = new THREE.Vector3();
     // The player steers a blink with the stick; AI (and an idle player) blink to the target.
-    if (target && (a.archetype !== 'hero' || a.moveIntent.lengthSq() < 0.01)) {
+    if (target && !a.ai.flee && (a.archetype !== 'hero' || a.moveIntent.lengthSq() < 0.01)) {
       // Appear just beside the target, on the side we came from.
       const away = from.clone().sub(target.pos).setY(0);
       if (away.lengthSq() < 1e-4) away.set(0, 0, 1);
       to.copy(target.pos).addScaledVector(away.normalize(), target.radius + a.radius + 1.2);
+      // Targets on a narrow ledge or platform: arrive on the same surface, right next to them.
+      to.y = target.pos.y;
+      if (target.pos.y > 0.5 && this.floorAt(to.x, to.z, to.y) < target.pos.y - 0.5) {
+        to.copy(target.pos).addScaledVector(away, 0.6);
+      }
     } else {
       const dir = a.moveIntent.lengthSq() > 0.01 ? a.moveIntent.clone().setY(0).normalize() : a.forward();
       to.copy(from).addScaledVector(dir, range);
+      to.y = a.flying ? a.pos.y : this.floorAt(to.x, to.z, a.pos.y);
     }
-    to.y = a.flying ? a.pos.y : 0;
     this.keepInBounds(to, a.radius);
     this.fx.burst(a.center, color, 18, 6, 0.14);
     this.fx.ring(from, color, 2.5, 0.3);
@@ -294,16 +301,19 @@ export class Combat {
   /** A long arcing jump toward the target that slams down on landing. */
   private superLeap(a: Actor, p: Power): boolean {
     if (!a.grounded || a.flying) return false;
-    const target = this.findTarget(a, 26);
+    const target = a.ai.flee ? null : this.findTarget(a, 26);
     const flightTime = 0.9;
     const dest = target
       ? target.pos.clone()
       : a.pos.clone().addScaledVector(a.moveIntent.lengthSq() > 0.01 ? a.moveIntent.clone().setY(0).normalize() : a.forward(), 14);
+    if (!target) dest.y = this.floorAt(dest.x, dest.z, a.pos.y + 4);
     this.keepInBounds(dest, a.radius);
     a.faceToward(dest);
+    // Ballistic arc that lands at the destination's height (a rooftop, the skydeck, or the ground).
+    const g = GRAVITY * this.gravityScale;
     a.vel.x = (dest.x - a.pos.x) / flightTime;
     a.vel.z = (dest.z - a.pos.z) / flightTime;
-    a.vel.y = (GRAVITY * this.gravityScale * flightTime) / 2;
+    a.vel.y = (dest.y - a.pos.y + (g * flightTime * flightTime) / 2) / flightTime;
     a.grounded = false;
     a.jumps = 2;
     a.attackTimer = 0;
@@ -327,7 +337,7 @@ export class Combat {
     this.fx.burst(a.pos.clone().setY(0.4), '#d8c8b0', 22, 10);
     this.fx.shake(a.archetype === 'hero' ? 0.45 : 0.3);
     for (const e of this.enemiesOf(a)) {
-      if (e.pos.distanceTo(a.pos) <= slam.radius + e.radius && e.pos.y < 2.5) this.damage(e, slam.damage, a, slam.element, 11);
+      if (e.pos.distanceTo(a.pos) <= slam.radius + e.radius && Math.abs(e.pos.y - a.pos.y) < 2.5) this.damage(e, slam.damage, a, slam.element, 11);
     }
   }
 
@@ -339,7 +349,7 @@ export class Combat {
       p.z *= max / r;
     }
     for (const o of this.obstacles) {
-      if (p.y > o.height) continue;
+      if (!this.blocksSideways(o, p.y)) continue;
       const dx = p.x - o.x;
       const dz = p.z - o.z;
       const d = Math.hypot(dx, dz);
@@ -351,6 +361,17 @@ export class Combat {
         p.z = o.z + nz * min;
       }
     }
+  }
+
+  /** Whether a body standing at height y bumps into the side of this obstacle. */
+  private blocksSideways(o: Obstacle, y: number): boolean {
+    if (o.top - o.bottom < THIN) return false; // one-way platform
+    return y < o.top - 0.3 && y + 1.8 > o.bottom;
+  }
+
+  /** The surface something at (x, z), currently at height y, would land on. */
+  floorAt(x: number, z: number, y: number): number {
+    return floorAt(this.obstacles, x, z, y + 0.3);
   }
 
   toggleFlight(a: Actor) {
@@ -560,7 +581,7 @@ export class Combat {
       this.fx.burst(at.clone().setY(0.5), '#ffb080', 20, 10);
       this.fx.shake(0.3);
       for (const e of this.enemiesOf(a)) {
-        if (e.pos.distanceTo(at) <= radius + e.radius && e.pos.y < 2.5) this.damage(e, raw, a, element, 10);
+        if (e.pos.distanceTo(at) <= radius + e.radius && Math.abs(e.pos.y - at.y) < 2.5) this.damage(e, raw, a, element, 10);
       }
     });
   }
@@ -569,7 +590,7 @@ export class Combat {
 
   damage(target: Actor, raw: number, source: Actor | null, element: Element | null, knockback = 0) {
     if (!target.alive || target.invuln > 0) return;
-    let amount = raw;
+    let amount = raw * (source?.damageMult ?? 1);
     if (element === 'cosmic') amount *= 1.25;
     if (element === 'tech') amount *= 1.1;
     const roll = rollDamage(amount, source?.stats ?? target.stats, target.stats);
@@ -715,10 +736,13 @@ export class Combat {
       a.vel.y = Math.max(a.vel.y, 0);
     }
 
+    const prevY = a.pos.y;
     a.pos.addScaledVector(a.vel, dt);
 
-    if (a.pos.y <= 0) {
-      a.pos.y = 0;
+    // Land on the highest surface we were above last frame (ground, rooftop, platform).
+    const floor = this.floorAt(a.pos.x, a.pos.z, Math.max(prevY, a.pos.y));
+    if (a.pos.y <= floor && a.vel.y <= 0) {
+      a.pos.y = floor;
       if (a.vel.y < 0) a.vel.y = 0;
       a.grounded = true;
       a.jumps = 0;
@@ -730,7 +754,7 @@ export class Combat {
     if (a.flying) a.pos.y = Math.min(a.pos.y, 40);
 
     for (const o of this.obstacles) {
-      if (a.pos.y > o.height) continue;
+      if (!this.blocksSideways(o, a.pos.y)) continue;
       const dx = a.pos.x - o.x;
       const dz = a.pos.z - o.z;
       const d = Math.hypot(dx, dz);
@@ -826,7 +850,7 @@ export class Combat {
         }
       }
       const pos = p.mesh.position;
-      const blocked = pos.y <= 0 || this.obstacles.some((o) => pos.y < o.height && Math.hypot(pos.x - o.x, pos.z - o.z) < o.r);
+      const blocked = pos.y <= 0 || this.obstacles.some((o) => pos.y < o.top && pos.y > o.bottom && Math.hypot(pos.x - o.x, pos.z - o.z) < o.r);
       if (hit || blocked || p.life <= 0) {
         const color = ELEMENT_COLORS[p.element];
         const radius = Math.max(p.aoe, 1.2);

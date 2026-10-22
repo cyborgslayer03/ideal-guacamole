@@ -3,6 +3,7 @@
 import { randomFaction, randomLocation } from '../../core/generator';
 import { newId } from '../../core/id';
 import { Rng, randomSeed } from '../../core/rng';
+import type { RuleKey } from '../../core/rules';
 import { BIOMES, ROLES, type Faction, type Location } from '../../core/types';
 import { deleteButton, listDetail, removeById, type EditorContext } from '../context';
 import { h } from '../dom';
@@ -45,10 +46,45 @@ function locationEditor(ctx: EditorContext, l: Location): HTMLElement {
       ),
       !ctx.quick && field('Description', textArea(() => l.description, (v) => ((l.description = v), ctx.changed()))),
     ),
+    localLaws(ctx, l),
     h('div', { class: 'row end' },
       u.characters.length > 0 && h('button', { class: 'btn primary', onclick: () => ctx.playSandbox(l.id, u.characters[0].id) }, '▶ Visit in sandbox'),
       deleteButton(ctx, 'location', () => removeById(u.locations, l.id)),
     ),
+  );
+}
+
+const LAW_INFO: { key: RuleKey; label: string; min: number; max: number; hint: string }[] = [
+  { key: 'gravity', label: 'Gravity', min: 0.2, max: 2, hint: 'Low gravity means floaty jumps and long leaps.' },
+  { key: 'powerScale', label: 'Power scale', min: 0.5, max: 3, hint: 'Some places amplify or dampen superpowers.' },
+  { key: 'enemyDensity', label: 'Enemy density', min: 0.5, max: 2, hint: 'How crowded fights get here.' },
+];
+
+/** Per-location overrides of the universe's laws of reality. */
+function localLaws(ctx: EditorContext, l: Location): HTMLElement {
+  const u = ctx.universe;
+  return section('Local laws',
+    h('p', { class: 'muted' }, 'Override the universe’s laws of reality in this one place. Everything else follows the Universe tab. Sandbox sessions can override these again.'),
+    ...LAW_INFO.map((law) => {
+      const on = l.rules[law.key] !== undefined;
+      return h('div', { class: 'law-row' },
+        h('label', { class: 'check' },
+          h('input', {
+            type: 'checkbox',
+            checked: on,
+            onchange: (e: Event) => {
+              if ((e.target as HTMLInputElement).checked) l.rules[law.key] = u.rules[law.key];
+              else delete l.rules[law.key];
+              ctx.changed();
+              ctx.rerender();
+            },
+          }),
+          h('span', null, `${law.label}${on ? '' : ` (universe: ${u.rules[law.key].toFixed(2)}×)`}`),
+        ),
+        on && slider(() => l.rules[law.key] ?? u.rules[law.key], (v) => ((l.rules[law.key] = v), ctx.changed()), law.min, law.max, 0.05, (v) => `${v.toFixed(2)}×`),
+        on && h('span', { class: 'field-hint' }, law.hint),
+      );
+    }),
   );
 }
 

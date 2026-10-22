@@ -61,7 +61,7 @@ export class Effects {
     const mat = additive(color, 0.9);
     const m = new THREE.Mesh(ringGeo, mat);
     m.rotation.x = -Math.PI / 2;
-    m.position.set(pos.x, 0.08, pos.z);
+    m.position.set(pos.x, pos.y + 0.08, pos.z);
     this.add(m, mat, life, (p) => {
       m.scale.setScalar(0.2 + radius * Math.sqrt(p));
       mat.opacity = 0.9 * (1 - p);
@@ -98,7 +98,7 @@ export class Effects {
     const mat = additive(color, 0.25);
     const m = new THREE.Mesh(discGeo, mat);
     m.rotation.x = -Math.PI / 2;
-    m.position.set(pos.x, 0.06, pos.z);
+    m.position.set(pos.x, pos.y + 0.06, pos.z);
     m.scale.setScalar(radius);
     const edgeMat = additive(color, 0.8);
     const edge = new THREE.Mesh(ringGeo, edgeMat);

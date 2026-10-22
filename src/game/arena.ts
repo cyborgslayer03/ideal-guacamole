@@ -7,19 +7,114 @@ import type { Location } from '../core/types';
 
 export const ARENA_RADIUS = 55;
 
-/** Axis-aligned circle obstacle on the ground plane. */
+/**
+ * A vertical cylinder of solid space. Columns rise from the ground (bottom 0);
+ * thin floating platforms are one-way: you can jump up through them and land
+ * on top. Walkable tops can be stood on.
+ */
 export interface Obstacle {
   x: number;
   z: number;
   r: number;
-  height: number;
+  bottom: number;
+  top: number;
+  walkable: boolean;
 }
+
+/** Platforms thinner than this are one-way (no side collision). */
+export const THIN = 1.2;
 
 export interface Arena {
   group: THREE.Group;
   obstacles: Obstacle[];
+  /** Raised walkable spots (rooftops, ledges, the skydeck) for spawning. */
+  perches: THREE.Vector3[];
   update(t: number): void;
   dispose(): void;
+}
+
+/** Height of the highest walkable surface under (x, z) that is not above `maxY`. */
+export function floorAt(obstacles: readonly Obstacle[], x: number, z: number, maxY: number): number {
+  let floor = 0;
+  for (const o of obstacles) {
+    if (!o.walkable || o.top > maxY || o.top <= floor) continue;
+    if (Math.hypot(x - o.x, z - o.z) <= o.r) floor = o.top;
+  }
+  return floor;
+}
+
+/** Spire, skybridge, and skydeck: a climbable route to the arena's upper levels. */
+function buildLevels(rng: Rng, obstacles: Obstacle[], perches: THREE.Vector3[], group: THREE.Group, mat: THREE.Material, glowMat: THREE.Material, track: <T extends { dispose(): void }>(x: T) => T) {
+  const add = (geo: THREE.BufferGeometry, m: THREE.Material, x: number, y: number, z: number) => {
+    const mesh = new THREE.Mesh(track(geo), m);
+    mesh.position.set(x, y, z);
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    group.add(mesh);
+    return mesh;
+  };
+  const rim = (x: number, y: number, z: number, r: number) => {
+    const ring = add(new THREE.TorusGeometry(r, 0.08, 6, 40), glowMat, x, y, z);
+    ring.rotation.x = Math.PI / 2;
+  };
+
+  // The spire: six stepping pillars spiralling up, each a double-jump above the last.
+  const angle = rng.float(0, Math.PI * 2);
+  const cx = Math.cos(angle) * 26;
+  const cz = Math.sin(angle) * 26;
+  const toOrigin = Math.atan2(-cz, -cx);
+  add(new THREE.CylinderGeometry(1, 1.2, 17, 10), mat, cx, 8.5, cz);
+  obstacles.push({ x: cx, z: cz, r: 1.1, bottom: 0, top: 17, walkable: false });
+  let last = { x: cx, z: cz };
+  for (let k = 0; k < 6; k++) {
+    const top = 2.4 * (k + 1);
+    const theta = toOrigin + (k - 5) * 1.05;
+    const x = cx + Math.cos(theta) * 6;
+    const z = cz + Math.sin(theta) * 6;
+    add(new THREE.CylinderGeometry(2.2, 2.4, top, 16), mat, x, top / 2, z);
+    rim(x, top + 0.02, z, 2.2);
+    obstacles.push({ x, z, r: 2.2, bottom: 0, top, walkable: true });
+    perches.push(new THREE.Vector3(x, top, z));
+    last = { x, z };
+  }
+
+  // Skybridge: floating stepping platforms from the spire's top to the skydeck.
+  const deckTop = 14.4;
+  const lastDist = Math.hypot(last.x, last.z);
+  const ux = last.x / lastDist;
+  const uz = last.z / lastDist;
+  for (const d of [lastDist - 5, lastDist - 9.5]) {
+    add(new THREE.CylinderGeometry(2.4, 2.4, 0.5, 20), mat, ux * d, deckTop - 0.25, uz * d);
+    rim(ux * d, deckTop + 0.02, uz * d, 2.4);
+    obstacles.push({ x: ux * d, z: uz * d, r: 2.4, bottom: deckTop - 0.5, top: deckTop, walkable: true });
+  }
+
+  // Skydeck: a wide floating arena above the center, the top level.
+  const deck = add(new THREE.CylinderGeometry(7, 6.4, 0.6, 40), mat, 0, deckTop - 0.3, 0);
+  deck.receiveShadow = true;
+  rim(0, deckTop + 0.02, 0, 7);
+  rim(0, deckTop - 0.6, 0, 6.4);
+  obstacles.push({ x: 0, z: 0, r: 7, bottom: deckTop - 0.6, top: deckTop, walkable: true });
+  perches.push(new THREE.Vector3(0, deckTop, 0), new THREE.Vector3(4, deckTop, 0), new THREE.Vector3(-3, deckTop, 3));
+}
+
+/** Flat-topped outcrops so every biome has rooftop-height ledges. */
+function buildOutcrops(rng: Rng, obstacles: Obstacle[], perches: THREE.Vector3[], group: THREE.Group, mat: THREE.Material, glowMat: THREE.Material, track: <T extends { dispose(): void }>(x: T) => T, place: (minR: number, maxR: number, r: number) => { x: number; z: number } | null) {
+  for (let i = 0; i < 4; i++) {
+    const r = rng.float(3, 4.2);
+    const spot = place(18, ARENA_RADIUS - 8, r);
+    if (!spot) continue;
+    const top = rng.float(4, 9);
+    const mesh = new THREE.Mesh(track(new THREE.CylinderGeometry(r, r * 1.15, top, 7)), mat);
+    mesh.position.set(spot.x, top / 2, spot.z);
+    mesh.castShadow = mesh.receiveShadow = true;
+    const rimMesh = new THREE.Mesh(track(new THREE.TorusGeometry(r * 0.98, 0.08, 6, 7)), glowMat);
+    rimMesh.rotation.x = Math.PI / 2;
+    rimMesh.position.set(spot.x, top + 0.02, spot.z);
+    group.add(mesh, rimMesh);
+    obstacles.push({ ...spot, r, bottom: 0, top, walkable: true });
+    perches.push(new THREE.Vector3(spot.x, top, spot.z));
+  }
 }
 
 export function buildArena(location: Location, seed: number): Arena {
@@ -28,6 +123,7 @@ export function buildArena(location: Location, seed: number): Arena {
   const disposables: { dispose(): void }[] = [];
   const track = <T extends { dispose(): void }>(x: T) => (disposables.push(x), x);
   const obstacles: Obstacle[] = [];
+  const perches: THREE.Vector3[] = [];
   const glow = new THREE.Color(location.glowColor);
   const animated: ((t: number) => void)[] = [];
 
@@ -86,12 +182,18 @@ export function buildArena(location: Location, seed: number): Arena {
   const structureMat = track(new THREE.MeshStandardMaterial({ color: new THREE.Color(location.groundColor).offsetHSL(0, 0, 0.08), roughness: 0.6, metalness: 0.4 }));
   const glowMat = track(new THREE.MeshStandardMaterial({ color: glow, emissive: glow, emissiveIntensity: 1.4 }));
 
+  buildLevels(rng, obstacles, perches, group, structureMat, glowMat, track);
+  buildOutcrops(rng, obstacles, perches, group, structureMat, glowMat, track, placeObstacle);
+
+  // City blocks have flat roofs you can stand on; other biomes' shapes are too jagged.
+  const flatRoofs = location.biome === 'metropolis';
   for (let i = 0; i < count; i++) {
     const r = rng.float(1.5, 3.5);
     const spot = placeObstacle(14, ARENA_RADIUS - 5, r);
     if (!spot) continue;
     const h = buildStructure(location, rng, r, structureMat, glowMat, track, group, spot, animated);
-    obstacles.push({ ...spot, r, height: h });
+    obstacles.push({ ...spot, r, bottom: 0, top: h, walkable: flatRoofs });
+    if (flatRoofs) perches.push(new THREE.Vector3(spot.x, h, spot.z));
   }
 
   // Distant skyline/backdrop beyond the arena edge for a sense of scale.
@@ -122,6 +224,7 @@ export function buildArena(location: Location, seed: number): Arena {
   return {
     group,
     obstacles,
+    perches,
     update: (t) => animated.forEach((f) => f(t)),
     dispose: () => disposables.forEach((d) => d.dispose()),
   };

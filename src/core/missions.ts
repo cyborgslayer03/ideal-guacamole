@@ -35,6 +35,20 @@ export interface MissionPlan {
   decideBosses: boolean;
   /** Health multiplier per boss (nemeses grow stronger every time they win). */
   bossPower: Record<string, number>;
+  /** Patrols: who can show up in ambient events (fleeing villains, allies calling for help). */
+  ambient: AmbientCast | null;
+}
+
+export interface AmbientCast {
+  villainIds: string[];
+  allyIds: string[];
+}
+
+/** Optional side activity during a patrol or sandbox session. */
+export interface AmbientSummary {
+  completed: number;
+  /** Allies whose distress calls the player answered successfully. */
+  helpedAllyIds: string[];
 }
 
 export type BossOutcome = 'arrest' | 'spare' | 'recruit' | 'finish';
@@ -55,6 +69,7 @@ export interface MissionResult {
   outcomes: Record<string, BossOutcome>;
   /** Index of the story choice option picked, if any. */
   choice: number | null;
+  ambient?: AmbientSummary;
 }
 
 /** First chapter at or after `start` whose condition is met by the flags. */
@@ -97,5 +112,6 @@ export function planChapter(u: Universe, story: Story, index: number): MissionPl
     ambushLine: '',
     decideBosses: false,
     bossPower: {},
+    ambient: null,
   };
 }

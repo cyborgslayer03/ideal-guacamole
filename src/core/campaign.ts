@@ -570,6 +570,25 @@ export function planMission(c: Campaign, u: Universe, m: Mission, heroId: string
     ambushLine: m.ambushId ? barks(c, u, m.ambushId, heroName)[0]?.text ?? '' : '',
     decideBosses: true,
     bossPower,
+    ambient: m.kind === 'patrol' ? ambientCast(c, u, m, heroId, allyId) : null,
+  };
+}
+
+/**
+ * Who can turn up in a patrol's ambient events: hostile characters on the
+ * run (the patrolled faction's own first), and friends who might call for help.
+ */
+function ambientCast(c: Campaign, u: Universe, m: Mission, heroId: string, companionId: string | null) {
+  const busy = new Set([heroId, companionId, ...m.targetIds, m.ambushId].filter(Boolean));
+  const hostile = u.characters.filter((x) => isHostile(c, x) && !busy.has(x.id));
+  const own = hostile.filter((x) => factionOf(c, x.id) === m.factionId);
+  const friends = u.characters.filter((x) => {
+    const r = c.relations[x.id];
+    return r?.state === 'free' && !busy.has(x.id) && !isHostile(c, x) && x.role !== 'villain';
+  });
+  return {
+    villainIds: [...own, ...hostile.filter((x) => !own.includes(x))].slice(0, 6).map((x) => x.id),
+    allyIds: friends.slice(0, 6).map((x) => x.id),
   };
 }
 
@@ -764,6 +783,14 @@ export function resolveMission(c: Campaign, u: Universe, m: Mission, result: Mis
       shiftScore(c, u, news, m.allyId, 25);
     }
     if (m.kind === 'story' && m.storyId) applyStoryChoice(c, u, news, m.storyId, m.chapter, result.choice);
+    if (result.ambient?.completed) {
+      news.add('mission', `${hero.alias} handled ${result.ambient.completed} ${result.ambient.completed === 1 ? 'incident' : 'incidents'} along the way.`);
+      if (m.factionId && c.factions[m.factionId]) c.factions[m.factionId].power = clamp(c.factions[m.factionId].power - Math.min(10, result.ambient.completed * 2), 0, 100);
+    }
+    for (const id of result.ambient?.helpedAllyIds ?? []) {
+      remember(c, id, `was rescued by ${hero.alias} on patrol`);
+      shiftScore(c, u, news, id, 10);
+    }
   } else {
     news.add('mission', `${hero.alias} was defeated during “${m.title}”.`);
     for (const bossId of result.survivingBossIds) {

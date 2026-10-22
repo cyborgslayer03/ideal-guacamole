@@ -10,8 +10,12 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { randomLocation } from '../core/generator';
 import type { BossOption, BossOutcome, MissionPlan, MissionResult, PatrolEvent, Phase } from '../core/missions';
 import { Rng } from '../core/rng';
-import { RARITY_COLORS, effectiveStats, grantXp, maxHealth, minionHealth, minionStats, xpReward } from '../core/rules';
-import type { Appearance, Character, Location, Universe } from '../core/types';
+import {
+  RARITY_COLORS, THREAT_TIERS, effectiveStats, grantXp, maxHealth, minionHealth, minionStats, resolveRules, tierById, xpReward,
+  type RuleKey, type ThreatTier,
+} from '../core/rules';
+import type { Appearance, Character, Location, Universe, UniverseRules } from '../core/types';
+import { AmbientDirector, type AmbientHost } from './ambient';
 import { h } from '../ui/dom';
 import { updateAlly, updateEnemy } from './ai';
 import { ARENA_RADIUS, buildArena, type Arena } from './arena';
@@ -98,12 +102,27 @@ export class GameSession {
   private disposed = false;
   private readonly character: Character;
   private readonly onResize = () => this.resize();
+  /** Effective rules for the current stage (universe → location → session layers). */
+  private rules: UniverseRules;
+  private ruleSource: Record<RuleKey, string> = { powerScale: 'Universe', gravity: 'Universe', enemyDensity: 'Universe' };
+  /** Sandbox overrides: the top rule layer. */
+  private sessionRules: Partial<UniverseRules> = {};
+  /** Sandbox threat tier. Missions always play at their own level. */
+  private tier: ThreatTier = tierById('city');
+  private ambient: AmbientDirector | null = null;
+  private ambientInSandbox = false;
+  /** Friendly characters fighting alongside for a while (ambient distress calls). */
+  private helpers: Actor[] = [];
+  private portals: { group: THREE.Group; pos: THREE.Vector3; location: Location }[] = [];
+  private travelling = false;
+  private feedTimer = 0;
 
   constructor(private readonly opts: SessionOptions) {
     const character = opts.universe.characters.find((c) => c.id === opts.characterId);
     if (!character) throw new Error('Character not found');
     this.character = character;
     this.spawnLevel = character.level;
+    this.rules = { ...opts.universe.rules };
 
     this.root = h('div', { class: 'game' });
     opts.container.appendChild(this.root);
@@ -159,8 +178,9 @@ export class GameSession {
     this.scene.add(arena.group);
     const fx = new Effects(this.scene);
     const combat = new Combat(this.scene, fx, arena.obstacles);
-    combat.powerScale = u.rules.powerScale;
-    combat.gravityScale = u.rules.gravity;
+    this.resolveStageRules(location);
+    combat.powerScale = this.rules.powerScale;
+    combat.gravityScale = this.rules.gravity;
 
     const c = this.character;
     const player = new Actor(c.alias, 'player', 'hero', effectiveStats(c, u.items), c.level, c.appearance, c.powers, undefined, c);
@@ -194,9 +214,22 @@ export class GameSession {
     this.camTarget.copy(player.center);
   }
 
+  /** Universe rules, then the location's local laws, then (sandbox only) session overrides. */
+  private resolveStageRules(location: Location) {
+    const layers = [{ label: location.name, rules: location.rules }];
+    if (!this.opts.plan) layers.push({ label: 'Session', rules: this.sessionRules });
+    const resolved = resolveRules(this.opts.universe.rules, layers);
+    this.rules = resolved.rules;
+    this.ruleSource = resolved.source;
+  }
+
   private teardownStage() {
     if (!this.stage) return;
     const s = this.stage;
+    this.stopAmbient();
+    this.helpers = [];
+    for (const p of this.portals) this.disposeGroup(p.group);
+    this.portals = [];
     for (const b of this.run?.beacons ?? []) if (b.state !== 'done') this.retireBeacon(b, false);
     s.combat.clear();
     s.fx.clear();
@@ -216,25 +249,36 @@ export class GameSession {
     const s = this.stage;
     if (!s) return null;
     const color = this.factionColor(factionId);
+    // Threat tiers scale the sandbox; missions play at their own level.
+    const t = this.opts.plan ? null : this.tier;
+    const lvl = Math.max(1, level + (t?.levelBonus ?? 0));
+    const elite = !!t && Math.random() < t.eliteChance;
     const appearance: Appearance = {
       primary: color,
       secondary: '#1a1c24',
-      accent: type === 'gunner' ? '#ff4040' : '#30343c',
+      accent: elite ? '#ffc23e' : type === 'gunner' ? '#ff4040' : '#30343c',
       build: type === 'brute' ? 'heavy' : 'athletic',
-      height: type === 'brute' ? 1.1 : 0.95,
+      height: type === 'brute' ? 1.1 : elite ? 1.05 : 0.95,
       head: type === 'gunner' ? 'visor' : 'helmet',
-      emblem: 'none',
-      cape: false,
-      aura: false,
+      emblem: elite ? 'star' : 'none',
+      cape: elite,
+      aura: elite,
     };
-    const stats = minionStats(level, type);
-    const name = type === 'brute' ? 'Brute' : type === 'gunner' ? 'Gunner' : 'Trooper';
-    const e = new Actor(name, 'enemy', type, stats, level, appearance, [], minionHealth(stats, level, type));
-    const a = Math.random() * Math.PI * 2;
-    const d = around ? 5 + Math.random() * 6 : 18 + Math.random() * 12;
-    const center = around ?? s.player.pos;
-    e.pos.set(center.x + Math.cos(a) * d, 0, center.z + Math.sin(a) * d);
-    clampToArena(e.pos, 3);
+    const stats = minionStats(lvl, type);
+    const name = `${elite ? 'Elite ' : ''}${type === 'brute' ? 'Brute' : type === 'gunner' ? 'Gunner' : 'Trooper'}`;
+    const health = Math.round(minionHealth(stats, lvl, type) * (t?.health ?? 1) * (elite ? 2.5 : 1));
+    const e = new Actor(name, 'enemy', type, stats, lvl, appearance, [], health);
+    e.damageMult = (t?.damage ?? 1) * (elite ? 1.5 : 1);
+    // Some gunners take the high ground: rooftops, ledges, and the skydeck.
+    const perch = !around && type === 'gunner' && Math.random() < 0.4 ? this.perchNear(s.player.pos, 10, 35) : null;
+    if (perch) e.pos.copy(perch);
+    else {
+      const a = Math.random() * Math.PI * 2;
+      const d = around ? 5 + Math.random() * 6 : 18 + Math.random() * 12;
+      const center = around ?? s.player.pos;
+      e.pos.set(center.x + Math.cos(a) * d, 0, center.z + Math.sin(a) * d);
+      clampToArena(e.pos, 3);
+    }
     e.ai.spawn = 0.8;
     s.combat.add(e);
     s.fx.flare(e.center, color, 2.5, 0.4);
@@ -246,8 +290,10 @@ export class GameSession {
     const s = this.stage;
     if (!s) return null;
     const stats = effectiveStats(character, this.opts.universe.items);
-    const lvl = Math.max(character.level, level);
-    const boss = new Actor(character.alias, 'enemy', 'boss', stats, lvl, character.appearance, character.powers, Math.round(maxHealth(stats, lvl) * 4 * power), character);
+    const t = this.opts.plan ? null : this.tier;
+    const lvl = Math.max(1, Math.max(character.level, level) + (t?.levelBonus ?? 0));
+    const boss = new Actor(character.alias, 'enemy', 'boss', stats, lvl, character.appearance, character.powers, Math.round(maxHealth(stats, lvl) * 4 * power * (t?.health ?? 1)), character);
+    boss.damageMult = t?.damage ?? 1;
     if (power > 1) boss.title = 'Nemesis';
     if (at) boss.pos.copy(at);
     else boss.pos.set(s.player.pos.x, 0, s.player.pos.z - 16);
@@ -260,6 +306,15 @@ export class GameSession {
     s.fx.ring(boss.pos, character.appearance.accent, 6, 0.6);
     s.fx.shake(0.5);
     return boss;
+  }
+
+  /** A random raised spot (rooftop, ledge, platform) at a horizontal distance from p. */
+  private perchNear(p: THREE.Vector3, minDist: number, maxDist: number): THREE.Vector3 | null {
+    const options = (this.stage?.arena.perches ?? []).filter((q) => {
+      const d = Math.hypot(q.x - p.x, q.z - p.z);
+      return q.y > 2 && d >= minDist && d <= maxDist;
+    });
+    return options.length ? options[Math.floor(Math.random() * options.length)].clone() : null;
   }
 
   private pickMinion(level: number): Minion {
@@ -322,6 +377,7 @@ export class GameSession {
       this.refreshBossBar();
     } else if (phase.kind === 'patrol') {
       r.beacons = phase.events.map((event, i) => this.makeBeacon(event, i, phase.events.length));
+      if (r.plan.ambient) this.startAmbient(r.plan.ambient.villainIds, r.plan.ambient.allyIds);
     }
   }
 
@@ -366,7 +422,7 @@ export class GameSession {
     const s = this.stage;
     if (!r || !s || r.done || r.transitioning || r.phase < 0) return;
     const phase = r.plan.phases[r.phase];
-    const density = this.opts.universe.rules.enemyDensity;
+    const density = this.rules.enemyDensity;
     const level = r.plan.level;
     const factionId = r.plan.factionId;
     const alive = s.combat.actors.filter((a) => a.team === 'enemy' && a.alive && a.archetype !== 'boss').length;
@@ -492,7 +548,7 @@ export class GameSession {
     b.state = 'active';
     s.hud.banner(eventLabel(b.event, this.opts.universe), '', 1.6);
     if (b.event.kind === 'squad') {
-      for (let i = 0; i < Math.round(b.event.count * this.opts.universe.rules.enemyDensity); i++) {
+      for (let i = 0; i < Math.round(b.event.count * this.rules.enemyDensity); i++) {
         const e = this.spawnMinion(this.pickMinion(r.plan.level), r.plan.level, r.plan.factionId, b.pos);
         if (e) b.actors.add(e);
       }
@@ -513,6 +569,8 @@ export class GameSession {
     const s = this.stage;
     if (!r || !s || r.done) return;
     r.done = true;
+    const ambient = this.ambient?.results;
+    this.stopAmbient();
     s.hud.setObjective('');
     s.hud.setBoss(null);
     this.slowmo = 1.2;
@@ -560,13 +618,14 @@ export class GameSession {
     }
     this.opts.onSave();
 
-    const result: MissionResult = { victory: true, defeatedBossIds: r.defeated, survivingBossIds: [], outcomes, choice };
+    const result: MissionResult = { victory: true, defeatedBossIds: r.defeated, survivingBossIds: [], outcomes, choice, ambient };
     s.hud.modal(
       'Mission Complete',
       h('div', { class: 'rewards' },
         h('div', null, `+${r.plan.xp} XP`),
         levels > 0 && h('div', { class: 'reward-level' }, `LEVEL UP! Now level ${this.character.level}`),
         reward && h('div', { style: `color:${RARITY_COLORS[reward.rarity]}` }, `Reward: ${rewardNote}`),
+        ambient && ambient.completed > 0 && h('div', null, `Side events handled: ${ambient.completed}`),
       ),
       [{ label: 'Continue', primary: true, onClick: () => this.finish(result) }],
     );
@@ -603,7 +662,7 @@ export class GameSession {
       }, 1400);
       return;
     }
-    if (target === s.ally) {
+    if (target === s.ally || this.helpers.includes(target)) {
       s.hud.banner(`${target.name} is down!`, '', 1.6);
       return;
     }
@@ -612,7 +671,7 @@ export class GameSession {
       if (r && target.character && !r.defeated.includes(target.character.id)) r.defeated.push(target.character.id);
       this.refreshBossBar();
     } else if (r) r.killed++;
-    const levels = grantXp(this.character, xpReward(target.level, target.archetype === 'boss'));
+    const levels = grantXp(this.character, xpReward(target.level, target.archetype === 'boss') * (this.opts.plan ? 1 : this.tier.xp));
     if (levels > 0) this.applyLevelUp();
     s.combat.schedule(1.4, () => {
       if (this.stage === s) s.combat.remove(target);
@@ -651,14 +710,149 @@ export class GameSession {
     s.fx.flare(p.center, '#ffffff', 3, 0.5);
   }
 
+  // --- Ambient events ---------------------------------------------------------
+
+  /** Starts side events. Ids narrow who can appear; null means anyone suitable in the universe. */
+  private startAmbient(villainIds: string[] | null, allyIds: string[] | null) {
+    this.stopAmbient();
+    const s = this.stage;
+    if (!s) return;
+    const u = this.opts.universe;
+    const busy = new Set([this.character.id, s.ally?.character?.id]);
+    const cast = (ids: string[] | null, fallback: (c: Character) => boolean) =>
+      (ids ? ids.map((id) => u.characters.find((c) => c.id === id)).filter((c): c is Character => !!c) : u.characters.filter(fallback)).filter((c) => !busy.has(c.id));
+    const level = () => this.run?.plan.level ?? this.spawnLevel;
+    const host: AmbientHost = {
+      player: () => s.player,
+      spawnMinion: (type, around) => this.spawnMinion(type, level(), this.run?.plan.factionId ?? null, around),
+      spawnFugitive: (ch, at) => {
+        const b = this.spawnBoss(ch, level(), 0.5, at);
+        if (b) {
+          b.ai.flee = 1;
+          b.title = 'Fugitive';
+          if (!this.run?.bosses.some((x) => x.alive)) s.hud.setBoss(b);
+        }
+        return b;
+      },
+      spawnHelper: (ch, at) => {
+        const a = new Actor(ch.alias, 'player', 'ally', effectiveStats(ch, u.items), ch.level, ch.appearance, ch.powers, undefined, ch);
+        a.pos.copy(at);
+        s.combat.add(a);
+        s.fx.flare(a.center, ch.appearance.accent, 2.5, 0.4);
+        this.helpers.push(a);
+        return a;
+      },
+      dismiss: (a) => {
+        s.fx.flare(a.center, '#ffffff', 2.5, 0.4);
+        s.combat.remove(a);
+        this.helpers = this.helpers.filter((x) => x !== a);
+        if (this.run) this.refreshBossBar();
+        else s.hud.setBoss(null);
+      },
+      perchNear: (p, min, max) => this.perchNear(p, min, max),
+      floorAt: () => 0,
+      reward: (xp, note) => {
+        const gained = Math.round(xp * (this.opts.plan ? 1 : this.tier.xp));
+        const levels = grantXp(this.character, gained);
+        s.hud.banner('Event complete', `${note} · +${gained} XP`, 2.2);
+        if (levels > 0) this.applyLevelUp();
+        this.opts.onSave();
+      },
+      restore: () => {
+        const p = s.player;
+        p.hp = Math.min(p.maxHp, p.hp + p.maxHp * 0.4);
+        p.energy = p.maxEnergy;
+        p.ultimate = Math.min(100, p.ultimate + 40);
+        s.fx.flare(p.center, '#3ee8ff', 3, 0.5);
+      },
+      banner: (title, sub) => s.hud.banner(title, sub, 2),
+      villains: cast(villainIds, (c) => c.role === 'villain'),
+      allies: cast(allyIds, (c) => c.role !== 'villain'),
+    };
+    this.ambient = new AmbientDirector(host, this.scene);
+  }
+
+  private stopAmbient() {
+    this.ambient?.dispose();
+    this.ambient = null;
+    this.stage?.hud.setFeed([]);
+  }
+
   // --- Sandbox -------------------------------------------------------------
 
   private startSandbox(locationId: string | null) {
-    this.buildStage(this.resolveLocation(locationId), null);
+    const location = this.resolveLocation(locationId);
+    this.buildStage(location, null);
     const s = this.stage!;
-    s.hud.banner('Omni Sandbox', 'You are the One Above All', 2.4);
-    s.hud.setObjective('Free play');
+    s.hud.banner(locationId ? `Entering ${location.name}` : 'Omni Sandbox', locationId ? `${this.tier.label} threat` : 'You are the One Above All', 2.4);
+    s.hud.setObjective(`Free play · ${location.name}`);
+    this.buildPortals(location);
+    if (this.ambientInSandbox) this.startAmbient(null, null);
     this.buildOmniPanel(s);
+  }
+
+  /** Gates at the arena edge to every other location in the universe. */
+  private buildPortals(current: Location) {
+    const s = this.stage!;
+    const others = this.opts.universe.locations.filter((l) => l.id !== current.id).slice(0, 6);
+    others.forEach((loc, i) => {
+      const a = (i / others.length) * Math.PI * 2 + 0.35;
+      const pos = new THREE.Vector3(Math.cos(a) * 47, 0, Math.sin(a) * 47);
+      const group = new THREE.Group();
+      const ring = new THREE.Mesh(
+        new THREE.TorusGeometry(2.4, 0.22, 10, 40),
+        new THREE.MeshStandardMaterial({ color: loc.glowColor, emissive: loc.glowColor, emissiveIntensity: 2 }),
+      );
+      const veil = new THREE.Mesh(
+        new THREE.CircleGeometry(2.3, 32),
+        new THREE.MeshBasicMaterial({ color: loc.skyColor, transparent: true, opacity: 0.85, side: THREE.DoubleSide }),
+      );
+      const glow = new THREE.Mesh(
+        new THREE.CircleGeometry(2.3, 32),
+        new THREE.MeshBasicMaterial({ color: loc.glowColor, transparent: true, opacity: 0.25, blending: THREE.AdditiveBlending, side: THREE.DoubleSide, depthWrite: false }),
+      );
+      glow.position.z = 0.05;
+      group.add(ring, veil, glow);
+      group.position.set(pos.x, 2.6, pos.z);
+      group.lookAt(0, 2.6, 0);
+      this.scene.add(group);
+      this.portals.push({ group, pos, location: loc });
+      s.hud.worldLabels.push({ id: `portal-${loc.id}`, pos: pos.clone().setY(5.8), text: `⇢ ${loc.name}`, color: loc.glowColor });
+    });
+  }
+
+  private checkPortals(s: Stage) {
+    if (this.travelling) return;
+    const p = s.player.pos;
+    const gate = this.portals.find((g) => Math.hypot(g.pos.x - p.x, g.pos.z - p.z) < 2.8 && p.y < 5);
+    if (gate) this.travelTo(gate.location.id);
+  }
+
+  /** Moves the sandbox to another location without leaving the session. */
+  private travelTo(locationId: string) {
+    if (this.travelling || this.run) return;
+    this.travelling = true;
+    this.stage?.fx.flare(this.stage.player.center, '#ffffff', 4, 0.4);
+    this.startSandbox(locationId);
+    this.travelling = false;
+  }
+
+  private disposeGroup(g: THREE.Group) {
+    this.scene.remove(g);
+    g.traverse((o) => {
+      if (o instanceof THREE.Mesh) {
+        o.geometry.dispose();
+        (o.material as THREE.Material).dispose();
+      }
+    });
+  }
+
+  private applySessionRules() {
+    const s = this.stage;
+    if (!s) return;
+    this.resolveStageRules(s.location);
+    s.combat.powerScale = this.rules.powerScale;
+    s.combat.gravityScale = this.rules.gravity;
   }
 
   private buildOmniPanel(s: Stage) {
@@ -668,19 +862,57 @@ export class GameSession {
     const levelLabel = h('span', null, String(this.spawnLevel));
     const bosses = u.characters.filter((c) => c.id !== this.character.id);
     const bossSelect = h('select', null, ...bosses.map((c) => h('option', { value: c.id }, `${c.alias} (${c.role})`)));
-    const slider = (label: string, min: number, max: number, step: number, value: number, set: (v: number) => void) => {
-      const out = h('span', null, value.toFixed(2));
-      return h('label', { class: 'omni-row' }, h('span', null, label),
-        h('input', {
-          type: 'range', min, max, step, value,
-          oninput: (e: Event) => {
-            const v = Number((e.target as HTMLInputElement).value);
-            out.textContent = v.toFixed(2);
-            set(v);
-          },
-        }), out);
+
+    const tierHint = h('div', { class: 'omni-hint' });
+    const tierChips = h('div', { class: 'omni-tiers' });
+    const renderTiers = () => {
+      const t = this.tier;
+      tierHint.textContent = `Enemy Lv ${t.levelBonus >= 0 ? '+' : ''}${t.levelBonus} · HP ×${t.health} · DMG ×${t.damage} · XP ×${t.xp} · Elites ${Math.round(t.eliteChance * 100)}%`;
+      tierChips.replaceChildren(...THREAT_TIERS.map((x) => h('button', { class: `chip${x.id === t.id ? ' active' : ''}`, onclick: () => ((this.tier = x), renderTiers()) }, x.label)));
     };
+    renderTiers();
+
+    const ruleRow = (key: RuleKey, label: string, min: number, max: number) => {
+      const out = h('span', null);
+      const src = h('div', { class: 'omni-src' });
+      const input = h('input', {
+        type: 'range', min, max, step: 0.05, value: this.rules[key],
+        oninput: (e: Event) => {
+          this.sessionRules[key] = Number((e.target as HTMLInputElement).value);
+          this.applySessionRules();
+          refresh();
+        },
+      });
+      const reset = h('button', {
+        class: 'icon-btn mini',
+        title: 'Remove the session override',
+        onclick: () => {
+          delete this.sessionRules[key];
+          this.applySessionRules();
+          input.value = String(this.rules[key]);
+          refresh();
+        },
+      }, '↺');
+      const refresh = () => {
+        out.textContent = this.rules[key].toFixed(2);
+        const layers = [`Universe ${u.rules[key].toFixed(2)}`];
+        const local = s.location.rules[key];
+        if (local !== undefined) layers.push(`${s.location.name} ${local.toFixed(2)}`);
+        if (this.sessionRules[key] !== undefined) layers.push(`Session ${this.sessionRules[key]!.toFixed(2)}`);
+        src.textContent = `${layers.join(' → ')} · using ${this.ruleSource[key]}`;
+        reset.disabled = this.sessionRules[key] === undefined;
+      };
+      refresh();
+      return h('div', null, h('label', { class: 'omni-row' }, h('span', null, label), input, out, reset), src);
+    };
+
+    const zoneSelect = h('select', null, ...u.locations.map((l) => h('option', { value: l.id, selected: l.id === s.location.id }, l.name)));
+    const timeOut = h('span', null, this.timeScale.toFixed(2));
+
     const body = h('div', { class: 'omni-body' },
+      h('div', { class: 'omni-section' }, 'Threat tier'),
+      tierChips,
+      tierHint,
       h('div', { class: 'omni-section' }, 'Spawn'),
       h('label', { class: 'omni-row' }, h('span', null, 'Level'),
         h('input', {
@@ -694,7 +926,7 @@ export class GameSession {
         h('button', { class: 'btn', onclick: () => this.spawnMinion('grunt', this.spawnLevel, null) }, '+ Trooper'),
         h('button', { class: 'btn', onclick: () => this.spawnMinion('gunner', this.spawnLevel, null) }, '+ Gunner'),
         h('button', { class: 'btn', onclick: () => this.spawnMinion('brute', this.spawnLevel, null) }, '+ Brute'),
-        h('button', { class: 'btn', onclick: () => { for (let i = 0; i < 8; i++) this.spawnMinion(this.pickMinion(this.spawnLevel), this.spawnLevel, null); } }, '+ Wave'),
+        h('button', { class: 'btn', onclick: () => { for (let i = 0; i < Math.round(8 * this.rules.enemyDensity); i++) this.spawnMinion(this.pickMinion(this.spawnLevel), this.spawnLevel, null); } }, '+ Wave'),
       ),
       bosses.length > 0 && h('div', { class: 'omni-row' }, bossSelect,
         h('button', {
@@ -706,18 +938,52 @@ export class GameSession {
           },
         }, 'Summon')),
       h('button', { class: 'btn', onclick: () => this.clearEnemies() }, 'Clear enemies'),
-      h('div', { class: 'omni-section' }, 'Reality'),
-      slider('Time', 0.1, 2, 0.05, this.timeScale, (v) => (this.timeScale = v)),
-      slider('Gravity', 0.2, 2, 0.05, s.combat.gravityScale, (v) => (s.combat.gravityScale = v)),
-      slider('Power', 0.5, 3, 0.05, s.combat.powerScale, (v) => (s.combat.powerScale = v)),
+      h('div', { class: 'omni-section' }, 'Ambient events'),
+      h('label', { class: 'omni-row' },
+        h('input', {
+          type: 'checkbox', checked: this.ambientInSandbox,
+          onchange: (e: Event) => {
+            this.ambientInSandbox = (e.target as HTMLInputElement).checked;
+            if (this.ambientInSandbox) this.startAmbient(null, null);
+            else this.stopAmbient();
+          },
+        }),
+        h('span', null, 'Street crime, snipers, fugitives, rifts…')),
+      h('button', {
+        class: 'btn',
+        onclick: () => {
+          if (!this.ambient) {
+            this.ambientInSandbox = true;
+            this.startAmbient(null, null);
+            this.buildOmniPanel(s);
+          }
+          this.ambient?.trigger();
+        },
+      }, 'Trigger an event now'),
+      h('div', { class: 'omni-section' }, 'Zones'),
+      h('div', { class: 'omni-row' }, zoneSelect, h('button', { class: 'btn primary', onclick: () => zoneSelect.value !== s.location.id && this.travelTo(zoneSelect.value) }, 'Travel')),
+      h('div', { class: 'omni-hint' }, 'Or walk through a portal at the arena edge.'),
+      h('div', { class: 'omni-section' }, 'Laws of reality'),
+      h('label', { class: 'omni-row' }, h('span', null, 'Time'),
+        h('input', {
+          type: 'range', min: 0.1, max: 2, step: 0.05, value: this.timeScale,
+          oninput: (e: Event) => {
+            this.timeScale = Number((e.target as HTMLInputElement).value);
+            timeOut.textContent = this.timeScale.toFixed(2);
+          },
+        }), timeOut),
+      ruleRow('gravity', 'Gravity', 0.2, 2),
+      ruleRow('powerScale', 'Power', 0.5, 3),
+      ruleRow('enemyDensity', 'Crowds', 0.5, 2),
       h('label', { class: 'omni-row' },
         h('input', { type: 'checkbox', checked: this.godMode, onchange: (e: Event) => (this.godMode = (e.target as HTMLInputElement).checked) }),
         h('span', null, 'Invincible')),
       h('button', { class: 'btn', onclick: () => { s.player.hp = s.player.maxHp; s.player.energy = s.player.maxEnergy; s.player.ultimate = 100; } }, 'Restore & charge ultimate'),
     );
+    const wasCollapsed = panel.classList.contains('collapsed');
     const toggle = h('button', { class: 'omni-toggle', onclick: () => panel.classList.toggle('collapsed') }, '⚙ OMNI');
     panel.replaceChildren(toggle, body);
-    if (window.innerWidth < 800 || window.innerHeight < 600) panel.classList.add('collapsed');
+    if (wasCollapsed || window.innerWidth < 800 || window.innerHeight < 600) panel.classList.add('collapsed');
   }
 
   private clearEnemies() {
@@ -781,6 +1047,9 @@ export class GameSession {
       this.controlPlayer(s, dt);
       for (const a of s.combat.actors) if (a.team === 'enemy') updateEnemy(a, s.combat, dt);
       if (s.ally) updateAlly(s.ally, s.combat, dt, s.player);
+      for (const helper of this.helpers) updateAlly(helper, s.combat, dt, s.player);
+      this.ambient?.update(dt);
+      if (!this.run) this.checkPortals(s);
       s.combat.update(dt);
       if (this.godMode) s.player.hp = s.player.maxHp;
       this.updateRun(dt);
@@ -793,6 +1062,13 @@ export class GameSession {
       }
     }
     for (const b of this.run?.beacons ?? []) b.group.rotation.y += realDt;
+    for (const p of this.portals) p.group.children[0].rotation.z += realDt * 0.8;
+    // The feed is DOM; refresh it a few times a second rather than every frame.
+    this.feedTimer -= realDt;
+    if (this.feedTimer <= 0) {
+      this.feedTimer = 0.25;
+      s.hud.setFeed(this.ambient?.feed() ?? []);
+    }
     s.arena.update(this.time);
     const shake = s.fx.update(dt);
     this.updateCamera(s, realDt, shake);

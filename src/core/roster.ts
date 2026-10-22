@@ -289,11 +289,13 @@ export function legendsUniverse(): Universe {
   court.leaderId = byKey.get('kryos')!.id;
 
   const loc = (name: string, biome: Location['biome'], skyColor: string, groundColor: string, glowColor: string, density: number): Location =>
-    ({ id: newId('loc'), name, biome, description: '', skyColor, groundColor, glowColor, density });
+    ({ id: newId('loc'), name, biome, description: '', skyColor, groundColor, glowColor, density, rules: {} });
   const city = loc('Neo Haven', 'metropolis', '#0a1030', '#151a2e', '#3ee8ff', 0.6);
   const peaks = loc('Frostspire Peaks', 'frozen', '#0c1e30', '#c8dcec', '#8fd8ff', 0.5);
   const sanctum = loc('Sanctum Obscura', 'mystic', '#120a24', '#1e1430', '#b06bff', 0.45);
   const station = loc('Event Horizon Station', 'cosmic', '#070414', '#1a1030', '#3eff8b', 0.4);
+  // Local laws: the orbital station has a third of normal gravity.
+  station.rules = { gravity: 0.35 };
   u.locations.push(city, peaks, sanctum, station);
 
   const item = (name: string, slot: Item['slot'], rarity: Item['rarity'], bonuses: Item['bonuses'], color: string, description: string): Item =>

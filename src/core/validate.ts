@@ -8,7 +8,7 @@ import {
   BIOMES, BUILDS, ELEMENTS, EMBLEMS, HEAD_STYLES, ITEM_SLOTS, POWER_KINDS, RARITIES, ROLES,
   SCHEMA_VERSION, STAT_KEYS,
   type Appearance, type Chapter, type ChapterCondition, type ChoiceOption, type StoryChoice, type Character, type DialogueLine, type Faction, type Item,
-  type Location, type Objective, type Power, type Stats, type Story, type Universe,
+  type Location, type Objective, type UniverseRules, type Power, type Stats, type Story, type Universe,
 } from './types';
 
 type Obj = Record<string, unknown>;
@@ -122,6 +122,23 @@ export function normalizeItem(raw: unknown): Item {
   };
 }
 
+const RULE_RANGES: Record<keyof UniverseRules, [number, number]> = {
+  powerScale: [0.5, 3],
+  gravity: [0.2, 2],
+  enemyDensity: [0.5, 2],
+};
+
+/** Keeps only valid, in-range rule overrides. */
+export function normalizePartialRules(raw: unknown): Partial<UniverseRules> {
+  const o = obj(raw);
+  const out: Partial<UniverseRules> = {};
+  for (const key of Object.keys(RULE_RANGES) as (keyof UniverseRules)[]) {
+    const [min, max] = RULE_RANGES[key];
+    if (typeof o[key] === 'number' && Number.isFinite(o[key])) out[key] = clamp(o[key] as number, min, max);
+  }
+  return out;
+}
+
 export function normalizeLocation(raw: unknown): Location {
   const o = obj(raw);
   return {
@@ -133,6 +150,7 @@ export function normalizeLocation(raw: unknown): Location {
     groundColor: color(o.groundColor, '#151a2e'),
     glowColor: color(o.glowColor, '#3ee8ff'),
     density: num(o.density, 0.5, 0, 1),
+    rules: normalizePartialRules(o.rules),
   };
 }
 

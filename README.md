@@ -22,7 +22,7 @@ npm run build      # typecheck + production build into dist/
 - **Characters:** a live 3D preview with costume colors, build, head style, emblem, cape and aura. Six attributes with archetype presets, up to 4 active powers plus movement powers, 4 gear slots, and a CP (combat power) rating.
 - **Powers:** 6 attack and support types (blast, beam, nova, dash, shield, heal) and 4 movement types (flight, teleport, super speed, super leap), across 10 elements. Each element has its own effect: fire burns, ice slows, lightning and psychic stun, shadow and nature drain life, cosmic and tech amplify damage, kinetic knocks back, and energy refunds energy.
 - **Stories:** chapters with a location, enemy faction, objective (defeat N, survive, or boss fight against any character), enemy level, reward item, and intro/outro dialogue.
-- **Laws of reality:** universe-wide power scale, gravity and enemy density.
+- **Laws of reality:** universe-wide power scale, gravity and enemy density, with per-location **local laws** that override them (the Legends' orbital station runs at 0.35× gravity).
 
 ### Movement powers
 Movement powers sit on **V** (or the travel button on touch) and never take a Q/E/R/F slot.
@@ -59,7 +59,7 @@ Every universe has a living campaign. The mission board is generated from the cu
 | Mission | What happens |
 | --- | --- |
 | **Story** | Your authored chapters. Bosses who are gone are replaced by whoever holds their position now. |
-| **Patrol** | Roam a location and respond to beacons: enemy squads, civilians to protect, elite lieutenants. Nemeses may ambush you. |
+| **Patrol** | Roam a location and respond to beacons: enemy squads, civilians to protect, elite lieutenants. Nemeses may ambush you, and optional ambient events pop up around you (see below). |
 | **Raid** | A multi-phase stronghold assault: waves, then the lieutenants together, then the faction leader. |
 | **Hunt** | Track down a faction leader, a lieutenant, or a hero who went rogue. |
 | **Vendetta** | A nemesis comes for you personally. |
@@ -73,8 +73,27 @@ Every universe has a living campaign. The mission board is generated from the cu
 - **Deterministic:** the world runs on the campaign seed, so the same choices always lead to the same outcomes.
 - **Omni controls** (in Full detail): override faction power and relationship scores, pass time, or reset the campaign.
 
+### Ambient events (patrols and sandbox)
+While you patrol, optional incidents appear nearby and show up in the **Nearby** feed. They expire if you ignore them.
+
+| Event | What to do | Payoff |
+| --- | --- | --- |
+| **Street crime** | Break up a gang. | XP |
+| **Rooftop snipers** | Get up to their perch and clear it. | XP |
+| **Supply drop** | Reach the crate before it's taken. | Health, energy, ultimate charge |
+| **Villain on the run** | Catch a fleeing villain before they escape. They flee and use their movement powers to break away. | XP, and a **boss verdict** in campaigns |
+| **Ally in distress** | Save a friend fighting off a squad. | XP, and **relationship +10** with a memory of the rescue |
+| **Unstable rift** | Hold the zone for 15 seconds while enemies pour out. | XP |
+
+In the campaign, incidents you handle also weaken the patrolled faction.
+
 ### Omni Sandbox
-Free play in any location. Spawn troops or waves at any level, summon any character as a boss, and bend time, gravity and power on the fly.
+Free play, layered:
+- **Vertical levels:** every arena has a climbable **spire** (steps a double jump apart), a **skybridge**, and a floating **skydeck** above the center. City rooftops and rocky outcrops are walkable, and platforms are one-way (jump up through them, land on top). Gunners take rooftop perches, grunts jump up ledges after you, and leap and teleport reach targets on any level.
+- **Connected zones:** walk through a **portal** at the arena edge, or pick a zone in the Omni panel, to travel to any other location in the universe without leaving the session.
+- **Threat tiers:** Street → City → Nation → Global → Cosmic scale enemy level, health, damage, elite chance (gold-trimmed Elites) and XP.
+- **Layers of control:** rules stack as Universe → Location (each location can set **local laws** for gravity, power scale and enemy density) → Session overrides. The Omni panel shows every layer and which one is in effect, with ↺ to drop a session override.
+- Spawn troops or waves, summon any character as a boss, toggle **ambient events** or trigger one now, and set the time scale or invincibility.
 
 ## Controls
 

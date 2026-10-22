@@ -104,6 +104,8 @@ export interface Location {
   glowColor: string;
   /** 0-1: how crowded the arena is with structures. */
   density: number;
+  /** Local laws: overrides of the universe rules that apply only here. */
+  rules: Partial<UniverseRules>;
 }
 
 export interface Faction {

@@ -6,6 +6,7 @@ import { ELEMENT_COLORS, xpForLevel } from '../core/rules';
 import type { DialogueLine, PowerKind } from '../core/types';
 import { h, type Child } from '../ui/dom';
 import type { Actor } from './combat';
+import type { FeedEntry } from './ambient';
 import type { Action, Input } from './input';
 
 const KIND_ICON: Record<PowerKind, string> = {
@@ -30,6 +31,11 @@ export class Hud {
   private readonly allyPanel = h('div', { class: 'hud-ally hidden' });
   private readonly allyFill = h('div', { class: 'bar-fill hp' });
   private ally: Actor | null = null;
+  private readonly feedEl = h('div', { class: 'ambient-feed hidden' });
+  private readonly labelLayer = h('div', { class: 'dmg-layer' });
+  private labelEls = new Map<string, HTMLElement>();
+  /** Floating labels pinned to world positions (portal names, etc.). */
+  worldLabels: { id: string; pos: THREE.Vector3; text: string; color: string }[] = [];
   private readonly levelEl = h('div', { class: 'hud-level' });
   private readonly objectiveEl = h('div', { class: 'hud-objective' });
   private readonly bossBar = h('div', { class: 'boss-bar hidden' });
@@ -102,7 +108,7 @@ export class Hud {
       ),
     );
 
-    this.root.append(this.enemyBars, this.numbers, top, this.comboEl, controls, this.sidePanel, this.bannerEl, this.dialogueEl, this.modalEl);
+    this.root.append(this.labelLayer, this.enemyBars, this.numbers, top, this.feedEl, this.comboEl, controls, this.sidePanel, this.bannerEl, this.dialogueEl, this.modalEl);
     if (isTouch()) this.root.append(this.buildJoystick());
     else this.root.append(h('div', { class: 'hud-hint' }, 'WASD move · J/Click attack · Shift dodge · Space jump · Q E R F powers · V movement power · X ultimate · Right-drag camera'));
   }
@@ -186,6 +192,21 @@ export class Hud {
       );
       this.modalEl.classList.remove('hidden');
     });
+  }
+
+  /** Optional side events, nearest first. Pass an empty list to hide the feed. */
+  setFeed(entries: FeedEntry[]) {
+    this.feedEl.classList.toggle('hidden', entries.length === 0);
+    if (!entries.length) return;
+    this.feedEl.replaceChildren(
+      h('div', { class: 'feed-title' }, 'Nearby'),
+      ...entries.map((e) =>
+        h('div', { class: 'feed-item', style: `--c:${e.color}` },
+          h('b', null, e.label),
+          h('span', null, `${e.detail} · ${e.distance}m`),
+        ),
+      ),
+    );
   }
 
   setObjective(text: string) {
@@ -315,6 +336,28 @@ export class Hud {
       if (this.comboTimer <= 0) {
         this.combo = 0;
         this.comboEl.classList.add('hidden');
+      }
+    }
+
+    // World labels.
+    const seenLabels = new Set<string>();
+    for (const l of this.worldLabels) {
+      seenLabels.add(l.id);
+      let el = this.labelEls.get(l.id);
+      if (!el) {
+        el = h('div', { class: 'world-label', style: `--c:${l.color}` }, l.text);
+        this.labelLayer.appendChild(el);
+        this.labelEls.set(l.id, el);
+      }
+      const p = l.pos.clone().project(camera);
+      el.style.display = p.z < 1 ? '' : 'none';
+      el.style.left = `${(p.x * 0.5 + 0.5) * 100}%`;
+      el.style.top = `${(-p.y * 0.5 + 0.5) * 100}%`;
+    }
+    for (const [id, el] of this.labelEls) {
+      if (!seenLabels.has(id)) {
+        el.remove();
+        this.labelEls.delete(id);
       }
     }
 

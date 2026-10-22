@@ -1,7 +1,7 @@
 // Game balance: how stats, levels, items, and powers turn into numbers.
 // Kept free of rendering code so it can be unit-tested and reused server-side.
 
-import { STAT_KEYS, isMovement, type Character, type Element, type Item, type Power, type PowerKind, type Rarity, type Stats } from './types';
+import { STAT_KEYS, isMovement, type Character, type Element, type Item, type Power, type PowerKind, type Rarity, type Stats, type UniverseRules } from './types';
 
 export const STAT_MIN = 1;
 export const STAT_MAX = 10;
@@ -125,6 +125,62 @@ export function teleportRange(power: Power): number {
 /** Radius of a Super Leap's landing slam, in meters. */
 export function leapSlamRadius(power: Power): number {
   return 4 + power.potency * 0.3;
+}
+
+// --- Threat tiers ----------------------------------------------------------------
+
+export interface ThreatTier {
+  id: 'street' | 'city' | 'nation' | 'global' | 'cosmic';
+  label: string;
+  /** Added to enemy levels. */
+  levelBonus: number;
+  health: number;
+  damage: number;
+  xp: number;
+  /** Chance a minion spawns as a tougher Elite. */
+  eliteChance: number;
+}
+
+export const THREAT_TIERS: readonly ThreatTier[] = [
+  { id: 'street', label: 'Street', levelBonus: -2, health: 0.7, damage: 0.7, xp: 0.6, eliteChance: 0 },
+  { id: 'city', label: 'City', levelBonus: 0, health: 1, damage: 1, xp: 1, eliteChance: 0.05 },
+  { id: 'nation', label: 'Nation', levelBonus: 4, health: 1.4, damage: 1.25, xp: 1.5, eliteChance: 0.12 },
+  { id: 'global', label: 'Global', levelBonus: 10, health: 2, damage: 1.6, xp: 2.2, eliteChance: 0.2 },
+  { id: 'cosmic', label: 'Cosmic', levelBonus: 20, health: 3, damage: 2.2, xp: 3.5, eliteChance: 0.3 },
+];
+
+export function tierById(id: string): ThreatTier {
+  return THREAT_TIERS.find((t) => t.id === id) ?? THREAT_TIERS[1];
+}
+
+// --- Layered rules ------------------------------------------------------------------
+
+export type RuleKey = keyof UniverseRules;
+export const RULE_KEYS: readonly RuleKey[] = ['powerScale', 'gravity', 'enemyDensity'];
+
+export interface RuleLayer {
+  /** Shown to the player as where a value came from, e.g. "Universe". */
+  label: string;
+  rules: Partial<UniverseRules>;
+}
+
+/**
+ * Stacks rule layers (e.g. universe, then location, then sandbox session).
+ * Later layers override earlier ones; `source` names the layer each value came from.
+ */
+export function resolveRules(base: UniverseRules, layers: readonly RuleLayer[]): { rules: UniverseRules; source: Record<RuleKey, string> } {
+  const rules = { ...base };
+  const source = { powerScale: 'Universe', gravity: 'Universe', enemyDensity: 'Universe' } as Record<RuleKey, string>;
+  for (const layer of layers) {
+    for (const key of RULE_KEYS) {
+      const v = layer.rules[key];
+      if (typeof v === 'number') {
+        rules[key] = v;
+        source[key] = layer.label;
+      }
+    }
+  }
+  return { rules, source };
 }
 
 export function xpForLevel(level: number): number {

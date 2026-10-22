@@ -217,6 +217,7 @@ export function randomLocation(rng: Rng, biome: Biome = rng.pick(BIOMES)): Locat
     groundColor: palette.ground,
     glowColor: palette.glow,
     density: Math.round(rng.float(0.3, 0.8) * 100) / 100,
+    rules: {},
   };
 }
 

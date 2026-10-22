@@ -33,6 +33,32 @@ function useTravel(a: Actor, combat: Combat, dt: number, dist: number, toward: T
   return combat.travel(a);
 }
 
+/** Minions can't fly, but they'll jump and double-jump onto ledges near a target above them. */
+function climbToward(e: Actor, combat: Combat, target: Actor) {
+  const rise = target.pos.y - e.pos.y;
+  if (rise < 1 || rise > 5.5 || e.busy) return;
+  const flat = Math.hypot(target.pos.x - e.pos.x, target.pos.z - e.pos.z);
+  if (flat > 9) return;
+  if (e.grounded) combat.jump(e);
+  else if (e.jumps === 1 && e.vel.y < 2) combat.jump(e);
+}
+
+/** Fugitives run, use movement powers to break away, and only fight when cornered. */
+function flee(e: Actor, combat: Combat, dt: number, target: Actor, dist: number) {
+  if (dist > 24) return;
+  const away = e.pos.clone().multiplyScalar(2).sub(target.pos);
+  steerToward(e, away, 0.85);
+  if (dist < 9 && e.travel && e.travel.kind !== 'flight' && e.travelRemaining <= 0 && cooldown(e, 'travel', dt) <= 0) {
+    e.ai.travel = 2;
+    e.faceToward(away);
+    combat.travel(e);
+  } else if (dist < 3 && !e.busy && cooldown(e, 'attack', dt) <= 0) {
+    e.faceToward(target.pos);
+    combat.basicAttack(e);
+    e.ai.attack = 1.2;
+  }
+}
+
 export function updateEnemy(e: Actor, combat: Combat, dt: number) {
   e.moveIntent.set(0, 0, 0);
   if (!e.alive) return;
@@ -47,6 +73,7 @@ export function updateEnemy(e: Actor, combat: Combat, dt: number) {
 
   switch (e.archetype) {
     case 'grunt':
+      climbToward(e, combat, target);
       if (gap > 1.2) steerToward(e, target.pos);
       else if (attackReady && !e.busy) {
         e.faceToward(target.pos);
@@ -88,6 +115,10 @@ export function updateEnemy(e: Actor, combat: Combat, dt: number) {
       break;
 
     case 'boss': {
+      if (e.ai.flee) {
+        flee(e, combat, dt, target, dist);
+        break;
+      }
       if (useTravel(e, combat, dt, dist, target.pos)) break;
       if (!e.busy) {
         // Try a power first, then a telegraphed slam, then melee.
