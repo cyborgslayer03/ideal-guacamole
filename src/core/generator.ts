@@ -3,6 +3,7 @@
 // single piece (a name, a power, a costume) as a starting point.
 
 import { newId } from './id';
+import { randomPerk } from './progression';
 import { Rng } from './rng';
 import {
   BIOMES, BUILDS, ELEMENTS, EMBLEMS, HEAD_STYLES, ITEM_SLOTS, RARITIES, SCHEMA_VERSION, STAT_KEYS,
@@ -213,6 +214,7 @@ export function randomCharacter(rng: Rng, role: Role = rng.pick(['hero', 'hero',
     itemIds: [],
     level: 1,
     xp: 0,
+    mastery: {},
   };
 }
 
@@ -230,6 +232,8 @@ export function randomItem(rng: Rng, slot: ItemSlot = rng.pick(ITEM_SLOTS), rari
     description: '',
     bonuses,
     color: rng.color(0.5, 0.65),
+    level: 0,
+    perk: rarity === 'common' || rarity === 'rare' ? null : randomPerk(rng, rarity),
   };
 }
 

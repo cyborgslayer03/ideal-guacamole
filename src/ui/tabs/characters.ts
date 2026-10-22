@@ -15,6 +15,8 @@ import { h, toast } from '../dom';
 import { checkbox, chips, colorInput, field, section, select, slider, textArea, textInput, capitalize } from '../forms';
 import { getPreview } from '../preview';
 import { modelSection } from '../model-editor';
+import { itemSummary } from '../armory';
+import { MASTERY_TIERS, boostedPower, loadoutFor, masteryPicks, setMastery, unspentMastery } from '../../core/progression';
 import { overlay } from '../overlay';
 import { LEGENDS, legendCharacter, type LegendSpec } from '../../core/roster';
 
@@ -63,6 +65,7 @@ export function blankCharacter(): Character {
     itemIds: [],
     level: 1,
     xp: 0,
+    mastery: {},
   };
 }
 
@@ -216,7 +219,9 @@ function characterEditor(ctx: EditorContext, c: Character): HTMLElement {
     changed();
     ctx.rerender();
   };
+  const unspent = unspentMastery(c);
   const powers = section('Powers',
+    unspent > 0 && h('p', { class: 'mastery-badge' }, `★ ${unspent} mastery ${unspent === 1 ? 'choice' : 'choices'} available below`),
     h('p', { class: 'muted' }, `Up to ${SKILL_SLOTS} attack and support powers map to Q E R F. Movement powers go on V (Flight, Teleport, Super Leap, Web Swing); Super Speed and Healing Factor are always on.`),
     ...c.powers.map((p, i) => powerEditor(ctx, c, p, i, changed)),
     h('div', { class: 'row' },
@@ -249,7 +254,7 @@ function characterEditor(ctx: EditorContext, c: Character): HTMLElement {
                 changed();
                 ctx.rerender();
               },
-            }, h('b', null, item.name), h('span', null, `${capitalize(item.rarity)} ${item.slot}`));
+            }, itemSummary(item));
           }),
         ),
     h('p', { class: 'muted' }, `${c.itemIds.length} / 4 equipped`),
@@ -315,8 +320,14 @@ function powerEditor(ctx: EditorContext, c: Character, p: Power, index: number, 
       case 'regeneration':
         info.textContent = `Passive · heal ${(regenRate([p]) * 100).toFixed(1)}% health per second when not taking damage`;
         break;
-      default:
-        info.textContent = `${POWER_INFO[p.kind]} ${dmg > 0 ? `${dmg} dmg · ` : ''}${powerCooldown(p, stats)}s cooldown · ${powerCost(p)} energy`;
+      default: {
+        // Show the numbers with mastery and gear applied.
+        const m = loadoutFor(c, ctx.universe.items).mods[p.id];
+        const bp = m ? boostedPower(p, m) : p;
+        const d = Math.round(powerDamage(bp, stats, c.level, ctx.universe.rules.powerScale) * (m?.damage ?? 1));
+        const cd = Math.round(powerCooldown(bp, stats) * (m?.cooldown ?? 1) * 10) / 10;
+        info.textContent = `${POWER_INFO[p.kind]} ${d > 0 ? `${d} dmg · ` : ''}${cd}s cooldown · ${Math.round(powerCost(bp) * (m?.cost ?? 1))} energy`;
+      }
     }
   };
   refreshInfo();
@@ -340,10 +351,45 @@ function powerEditor(ctx: EditorContext, c: Character, p: Power, index: number, 
     ),
     !ctx.quick && field('Description', textInput(() => p.description, (v) => ((p.description = v), ctx.changed()), 'What does it look like?', 200)),
     info,
+    takesSkillSlot(p.kind) && masteryTree(c, p, update),
   );
   return card;
 }
 
 function derived(label: string, value: number): HTMLElement {
   return h('div', { class: 'derived-stat' }, h('span', null, label), h('b', null, value.toLocaleString()));
+}
+
+/** Three tiers per power, unlocked by level; pick one option in each. Picks can be changed any time. */
+function masteryTree(c: Character, p: Power, changed: () => void): HTMLElement {
+  const wrap = h('div', { class: 'mastery' });
+  const render = () => {
+    const picks = c.mastery[p.id] ?? [];
+    wrap.replaceChildren(
+      h('div', { class: 'field-label' }, `Mastery${masteryPicks(c, p).length ? ` · ${masteryPicks(c, p).length}/${MASTERY_TIERS.length}` : ''}`),
+      ...MASTERY_TIERS.map((tier, i) => {
+        const locked = c.level < tier.level;
+        return h('div', { class: 'mastery-tier' },
+          h('span', { class: 'tier-label' }, locked ? `🔒 Lv ${tier.level}` : `Lv ${tier.level}`),
+          ...tier.options.map((opt, j) => {
+            const value = (j + 1) as 1 | 2;
+            const active = picks[i] === value;
+            return h('button', {
+              type: 'button',
+              class: `mastery-opt${active && !locked ? ' active' : ''}`,
+              disabled: locked,
+              title: locked ? `Reach level ${tier.level} to unlock` : '',
+              onclick: () => {
+                setMastery(c, p.id, i, active ? 0 : value);
+                render();
+                changed();
+              },
+            }, h('b', null, opt.label), opt.text);
+          }),
+        );
+      }),
+    );
+  };
+  render();
+  return wrap;
 }

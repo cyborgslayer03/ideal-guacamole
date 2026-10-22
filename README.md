@@ -74,6 +74,28 @@ AI bosses, companions, and enemies use all of them, and only when they make sens
 
 Add any of them to any universe with **★ Legends** in the Characters tab. Every legend is fully editable once added.
 
+### Power mastery
+Every attack or support power has a three-tier mastery tree. Each tier unlocks at a character level, and you pick one of two options (and can change picks any time):
+
+| Level | Option A | Option B |
+| --- | --- | --- |
+| 5 | **Amplify**: +25% damage and healing | **Quicken**: 25% shorter cooldown |
+| 15 | **Empower**: +3 potency (more projectiles, bigger areas, longer effects) | **Efficient**: half the energy cost |
+| 30 | **Overload**: each cast also bursts its element around you | **Lifeline**: each cast heals you for 6% |
+
+The power card shows the numbers with mastery and gear applied, and the editor flags unspent choices. Leveling up mid-mission announces newly unlocked tiers.
+
+### Gear, loot and the Armory
+- Items have stat bonuses, an optional **perk** (bonus damage, shorter cooldown or more potency for one power type, element damage, lifesteal, or faster ultimate charge) and an **upgrade level** from +0 to +5. Each level adds 15% to the stats and strengthens the perk.
+- **Loot drops** from War Table missions: raids drop 2, story, hunt, vendetta and team-up missions drop 1, and other missions drop 1 half the time. Harder missions and better grades raise the rarity, and an S grade drops an extra item. Perks are tailored to the hero's own powers.
+- The **Armory** on the War Table equips gear on the chosen hero, **upgrades** it with shards, and **salvages** gear you don't need into shards (refunding half of any upgrades).
+- In the creator, the Items tab edits perks and upgrade levels directly.
+
+### Sound and music
+All sound is synthesized live with WebAudio, so there are no audio files. Hits, crits, swings, dodges, jumps and every movement power have their own sounds. Each element has its own cast sound, and signature powers (time stop, sonic scream, storm strikes, web lines, summons, heals) have their own too. Sounds are panned to where they happen on screen and get quieter with distance.
+
+The generative music is an ambient pad while exploring, adds bass and drums when enemies are near, and adds an arpeggio lead for boss fights. Volume, music and effects levels are in Settings, and **M** mutes in game.
+
 ### 3D models (Mixamo, Quaternius, any glTF/FBX)
 Any character can swap the procedural body for a rigged 3D model in the **3D model** section of the Characters tab:
 
@@ -164,6 +186,7 @@ Free play, layered:
 | Team Assault | T | ⚡ |
 | Camera | Right-drag, arrow keys, wheel | Drag |
 | Pause | Esc / P | ❚❚ |
+| Mute sound | M | |
 
 ## Multiverse Hub (online)
 
@@ -229,5 +252,6 @@ tests/      Vitest: core logic, campaign rules and fuzzing, and a headless comba
 - **Hub, next steps:** comments, follows and creator profiles, remix credits, moderator tools, and cloud sync of your own library.
 - Cutscene camera moves, voiced barks, and companion banter based on relationships.
 - More enemy archetypes, elite modifiers, co-op heroes and team-up attacks.
+- Item sets with 2- and 4-piece bonuses, and signature mastery options unique to each power type.
 - Uploading imported model files to the hub so shared characters keep their look everywhere.
 - Packaging as an installable mobile/desktop app (PWA or Capacitor/Tauri).

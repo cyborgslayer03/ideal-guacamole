@@ -11,8 +11,9 @@ import { randomCharacter } from './generator';
 import type { BossOption, BossOutcome, MissionPlan, MissionResult, PatrolEvent, Phase } from './missions';
 import { chapterPhase, nextChapterIndex } from './missions';
 import { Rng } from './rng';
+import { rollLoot, rollRarity, salvageValue, upgradeCost } from './progression';
 import { MAX_LEVEL, clamp, combatPower, grantXp } from './rules';
-import type { Character, DialogueLine, Faction, Universe } from './types';
+import type { Character, DialogueLine, Faction, Item, Universe } from './types';
 
 export const CAMPAIGN_SCHEMA = 1;
 
@@ -51,7 +52,7 @@ export interface StoryProgress {
   done: boolean;
 }
 
-export type NewsKind = 'mission' | 'succession' | 'nemesis' | 'ally' | 'escape' | 'faction' | 'story' | 'betrayal' | 'contract';
+export type NewsKind = 'mission' | 'succession' | 'nemesis' | 'ally' | 'escape' | 'faction' | 'story' | 'betrayal' | 'contract' | 'loot';
 
 export interface NewsItem {
   turn: number;
@@ -71,6 +72,8 @@ export interface Campaign {
   news: NewsItem[];
   /** Ids of contracts already completed (see activeContracts). */
   contractsDone: string[];
+  /** Upgrade currency from salvaged gear. */
+  shards: number;
 }
 
 export type MissionKind = 'story' | 'patrol' | 'raid' | 'hunt' | 'vendetta' | 'ally' | 'defense' | 'teamup';
@@ -134,6 +137,7 @@ export function createCampaign(u: Universe): Campaign {
     stories: {},
     news: [{ turn: 1, kind: 'faction', text: 'The War Table is online. Choose your first mission.' }],
     contractsDone: [],
+    shards: 0,
   };
   syncCampaign(c, u);
   return c;
@@ -189,6 +193,7 @@ export function loadCampaign(raw: unknown, u: Universe): Campaign {
     stories: typeof o.stories === 'object' && o.stories ? { ...(o.stories as Record<string, StoryProgress>) } : {},
     news: Array.isArray(o.news) ? o.news.slice(0, MAX_NEWS) : [],
     contractsDone: Array.isArray(o.contractsDone) ? o.contractsDone.filter((x): x is string => typeof x === 'string').slice(-200) : [],
+    shards: typeof o.shards === 'number' && Number.isFinite(o.shards) ? clamp(Math.floor(o.shards), 0, 1e7) : 0,
   };
   for (const [id, r] of Object.entries(o.relations as Record<string, Relationship>)) {
     if (!r || typeof r !== 'object') continue;
@@ -874,12 +879,53 @@ export function resolveMission(c: Campaign, u: Universe, m: Mission, result: Mis
     for (const f of hostileFactions(c, u)) if (f.s.power >= 70) f.s.power = clamp(f.s.power + 3, 0, 100);
   }
 
-  if (result.victory) completeContracts(c, u, m, result, hero, news);
+  if (result.victory) {
+    completeContracts(c, u, m, result, hero, news);
+    for (const item of dropLoot(rng, m, result, hero)) {
+      u.items.push(item);
+      news.add('loot', `Loot: ${item.name} (${item.rarity} ${item.slot}). Equip it from the hero's Gear, or salvage it in the Armory.`);
+    }
+  }
   // Teammates who fought alongside you grow closer.
   if (result.victory) for (const id of result.squadIds ?? []) if (id !== heroId) shiftScore(c, u, news, id, 3);
   advanceWorld(c, u, rng, news);
   c.news = [...news.items].reverse().concat(c.news).slice(0, MAX_NEWS);
   return news.items;
+}
+
+// --- Loot and the Armory ------------------------------------------------------------
+
+const LOOT_DROPS: Record<MissionKind, number> = { story: 1, patrol: 0, raid: 2, hunt: 1, vendetta: 1, ally: 0, defense: 0, teamup: 1 };
+const GRADE_LUCK: Record<string, number> = { S: 0.6, A: 0.35, B: 0.15, C: 0 };
+
+/** Gear dropped by a won mission: more and better for harder missions and higher grades. */
+export function dropLoot(rng: Rng, m: Mission, result: MissionResult, hero: Character): Item[] {
+  // Patrols and smaller jobs drop something half the time.
+  let count = LOOT_DROPS[m.kind] || (rng.chance(0.5) ? 1 : 0);
+  if (result.grade === 'S') count++;
+  const luck = (m.difficulty - 1) * 0.12 + (GRADE_LUCK[result.grade ?? 'C'] ?? 0);
+  return Array.from({ length: Math.min(3, count) }, () => rollLoot(rng, rollRarity(rng, luck), hero));
+}
+
+/** Breaks an item down into shards. It's unequipped from everyone first. */
+export function salvageItem(c: Campaign, u: Universe, itemId: string): number {
+  const i = u.items.findIndex((x) => x.id === itemId);
+  if (i < 0) return 0;
+  const value = salvageValue(u.items[i]);
+  u.items.splice(i, 1);
+  for (const ch of u.characters) ch.itemIds = ch.itemIds.filter((id) => id !== itemId);
+  c.shards += value;
+  return value;
+}
+
+/** Spends shards to raise an item one level. Returns false if it can't. */
+export function upgradeItem(c: Campaign, u: Universe, itemId: string): boolean {
+  const item = u.items.find((x) => x.id === itemId);
+  const cost = item ? upgradeCost(item) : null;
+  if (!item || cost === null || c.shards < cost) return false;
+  c.shards -= cost;
+  item.level++;
+  return true;
 }
 
 // --- Contracts -------------------------------------------------------------------

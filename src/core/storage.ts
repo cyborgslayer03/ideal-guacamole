@@ -116,16 +116,26 @@ export interface Settings {
   /** Signed-in hub session. */
   hubToken: string;
   hubHandle: string;
+  /** 0-1 each. */
+  volume: { master: number; music: number; sfx: number };
 }
 
 const SETTINGS_KEY = 'of:settings';
-const DEFAULT_SETTINGS: Settings = { detail: 'quick', bloom: true, author: '', hubUrl: '', hubToken: '', hubHandle: '' };
+const DEFAULT_VOLUME = { master: 0.8, music: 0.5, sfx: 0.9 };
+const DEFAULT_SETTINGS: Settings = { detail: 'quick', bloom: true, author: '', hubUrl: '', hubToken: '', hubHandle: '', volume: DEFAULT_VOLUME };
 
 export function loadSettings(kv: KeyValueStore): Settings {
   try {
-    return { ...DEFAULT_SETTINGS, ...(JSON.parse(kv.getItem(SETTINGS_KEY) ?? '{}') as Partial<Settings>) };
+    const raw = JSON.parse(kv.getItem(SETTINGS_KEY) ?? '{}') as Partial<Settings>;
+    const v = (raw.volume ?? {}) as Partial<Settings['volume']>;
+    const vol = (x: unknown, d: number) => (typeof x === 'number' && x >= 0 && x <= 1 ? x : d);
+    return {
+      ...DEFAULT_SETTINGS,
+      ...raw,
+      volume: { master: vol(v.master, DEFAULT_VOLUME.master), music: vol(v.music, DEFAULT_VOLUME.music), sfx: vol(v.sfx, DEFAULT_VOLUME.sfx) },
+    };
   } catch {
-    return { ...DEFAULT_SETTINGS };
+    return { ...DEFAULT_SETTINGS, volume: { ...DEFAULT_VOLUME } };
   }
 }
 

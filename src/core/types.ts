@@ -114,7 +114,29 @@ export interface Character {
   itemIds: string[];
   level: number;
   xp: number;
+  /** Mastery picks per power id: one entry per tier, 0 = not chosen, 1 or 2 = option. */
+  mastery: Record<string, number[]>;
 }
+
+/** Mastery tiers per power (see core/progression.ts). */
+export const MASTERY_TIER_COUNT = 3;
+
+/** Gear perks: special effects on top of stat bonuses. */
+export const PERK_TYPES = ['powerDamage', 'powerCooldown', 'powerPotency', 'elementDamage', 'lifesteal', 'ultCharge'] as const;
+export type PerkType = (typeof PERK_TYPES)[number];
+
+export interface ItemPerk {
+  type: PerkType;
+  /** For power perks: which power type it boosts. */
+  power: PowerKind | null;
+  /** For element perks. */
+  element: Element | null;
+  /** Percent (cooldown, damage, lifesteal, ult charge) or potency points. */
+  value: number;
+}
+
+/** Highest upgrade level an item can reach. */
+export const MAX_ITEM_LEVEL = 5;
 
 export const ITEM_SLOTS = ['weapon', 'armor', 'artifact', 'gadget'] as const;
 export type ItemSlot = (typeof ITEM_SLOTS)[number];
@@ -130,6 +152,9 @@ export interface Item {
   description: string;
   bonuses: Partial<Stats>;
   color: string;
+  /** Upgrade level, 0 to MAX_ITEM_LEVEL. Each level strengthens bonuses and the perk. */
+  level: number;
+  perk: ItemPerk | null;
 }
 
 export const BIOMES = ['metropolis', 'cosmic', 'mystic', 'wasteland', 'frozen', 'jungle'] as const;

@@ -3,7 +3,7 @@
 
 import { emptyUniverse } from './generator';
 import { newId } from './id';
-import type { Appearance, Character, Element, Faction, Item, Location, PowerKind, Role, Stats, Story, Universe } from './types';
+import type { Appearance, Character, Element, Faction, Item, ItemPerk, Location, PowerKind, Role, Stats, Story, Universe } from './types';
 
 interface PowerSpec {
   name: string;
@@ -287,6 +287,7 @@ export function legendCharacter(spec: LegendSpec, factionId: string | null = nul
     itemIds: [],
     level: 1,
     xp: 0,
+    mastery: {},
   };
 }
 
@@ -324,11 +325,14 @@ export function legendsUniverse(): Universe {
   station.rules = { gravity: 0.35 };
   u.locations.push(city, peaks, sanctum, station);
 
-  const item = (name: string, slot: Item['slot'], rarity: Item['rarity'], bonuses: Item['bonuses'], color: string, description: string): Item =>
-    ({ id: newId('itm'), name, slot, rarity, bonuses, color, description });
-  const crown = item('Crown of Winter', 'artifact', 'mythic', { energy: 4, durability: 3, intelligence: 2 }, '#bfe4ff', 'Kryos’s crown. It hums with cold.');
-  const gauntlet = item('Vanguard Gauntlet', 'weapon', 'legendary', { strength: 3, combat: 3 }, '#f2b632', 'Forged from Aegis’s shield alloy.');
-  const cloak = item('Riftweave Cloak', 'armor', 'epic', { speed: 2, durability: 2 }, '#b06bff', 'Stitched from folded space.');
+  const item = (name: string, slot: Item['slot'], rarity: Item['rarity'], bonuses: Item['bonuses'], color: string, description: string, perk: ItemPerk): Item =>
+    ({ id: newId('itm'), name, slot, rarity, bonuses, color, description, level: 0, perk });
+  const crown = item('Crown of Winter', 'artifact', 'mythic', { energy: 4, durability: 3, intelligence: 2 }, '#bfe4ff', 'Kryos’s crown. It hums with cold.',
+    { type: 'elementDamage', power: null, element: 'ice', value: 30 });
+  const gauntlet = item('Vanguard Gauntlet', 'weapon', 'legendary', { strength: 3, combat: 3 }, '#f2b632', 'Forged from Aegis’s shield alloy.',
+    { type: 'ultCharge', power: null, element: null, value: 25 });
+  const cloak = item('Riftweave Cloak', 'armor', 'epic', { speed: 2, durability: 2 }, '#b06bff', 'Stitched from folded space.',
+    { type: 'lifesteal', power: null, element: null, value: 6 });
   u.items.push(crown, gauntlet, cloak);
 
   const id = (k: string) => byKey.get(k)!.id;

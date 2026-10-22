@@ -1,6 +1,6 @@
 // Keyboard, mouse, and touch input, merged into one per-frame snapshot.
 
-export type Action = 'attack' | 'dodge' | 'jump' | 'travel' | 'swap' | 'order' | 'assault' | 'ultimate' | 'skill0' | 'skill1' | 'skill2' | 'skill3' | 'pause';
+export type Action = 'attack' | 'dodge' | 'jump' | 'travel' | 'swap' | 'order' | 'assault' | 'ultimate' | 'skill0' | 'skill1' | 'skill2' | 'skill3' | 'pause' | 'mute';
 
 const KEY_ACTIONS: Record<string, Action> = {
   KeyJ: 'attack',
@@ -23,6 +23,7 @@ const KEY_ACTIONS: Record<string, Action> = {
   Digit4: 'skill3',
   Escape: 'pause',
   KeyP: 'pause',
+  KeyM: 'mute',
 };
 
 export class Input {

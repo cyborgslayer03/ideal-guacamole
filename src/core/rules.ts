@@ -34,12 +34,20 @@ export const RARITY_COLORS: Record<Rarity, string> = {
 
 export const clamp = (v: number, min: number, max: number) => Math.min(max, Math.max(min, v));
 
+/** Upgrades add 15% to each stat bonus per level (rounded, never below the base). */
+export function upgradedBonus(item: Item, key: keyof Stats): number {
+  const base = item.bonuses[key] ?? 0;
+  if (!base || !item.level) return base;
+  const scaled = Math.abs(base) * (1 + item.level * 0.15);
+  return Math.sign(base) * Math.max(Math.abs(base), Math.round(scaled));
+}
+
 export function effectiveStats(character: Character, items: readonly Item[]): Stats {
   const out = { ...character.stats };
   for (const id of character.itemIds) {
     const item = items.find((i) => i.id === id);
     if (!item) continue;
-    for (const key of STAT_KEYS) out[key] += item.bonuses[key] ?? 0;
+    for (const key of STAT_KEYS) out[key] += upgradedBonus(item, key);
   }
   for (const key of STAT_KEYS) out[key] = clamp(out[key], STAT_MIN, EFFECTIVE_STAT_MAX);
   return out;

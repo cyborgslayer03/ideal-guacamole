@@ -10,6 +10,7 @@ import type { Character } from '../../core/types';
 import type { EditorContext } from '../context';
 import { h } from '../dom';
 import { capitalize } from '../forms';
+import { armoryPanel } from '../armory';
 
 const KIND_META: Record<MissionKind, { label: string; color: string; icon: string }> = {
   story: { label: 'Story', color: '#ffc23e', icon: '✎' },
@@ -31,7 +32,7 @@ const BOND_COLORS: Record<Bond, string> = {
 };
 
 const NEWS_ICONS: Record<NewsItem['kind'], string> = {
-  contract: '✔',
+  contract: '✔', loot: '◈',
   mission: '◆', succession: '♛', nemesis: '⚔', ally: '✚', escape: '⛓', faction: '⚑', story: '✎', betrayal: '⚠',
 };
 
@@ -186,6 +187,7 @@ export function playTab(ctx: EditorContext): HTMLElement {
     contracts,
     h('h3', { class: 'panel-title' }, 'Missions'),
     board,
+    armoryPanel(ctx, hero ?? null),
     h('div', { class: 'war-columns' },
       h('section', { class: 'panel' }, h('h3', { class: 'panel-title' }, 'Factions'), factions),
       h('section', { class: 'panel' }, h('h3', { class: 'panel-title' }, 'Relationships'), relations),

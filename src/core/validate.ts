@@ -6,8 +6,8 @@ import { clamp } from './rules';
 import { newId } from './id';
 import {
   BIOMES, BUILDS, MODEL_STATES, ELEMENTS, EMBLEMS, HEAD_STYLES, ITEM_SLOTS, POWER_KINDS, RARITIES, ROLES,
-  SCHEMA_VERSION, STAT_KEYS,
-  type Appearance, type Chapter, type ModelRef, type ModelState, type ChapterCondition, type ChoiceOption, type StoryChoice, type Character, type DialogueLine, type Faction, type Item,
+  MASTERY_TIER_COUNT, MAX_ITEM_LEVEL, PERK_TYPES, SCHEMA_VERSION, STAT_KEYS,
+  type Appearance, type ItemPerk, type Chapter, type ModelRef, type ModelState, type ChapterCondition, type ChoiceOption, type StoryChoice, type Character, type DialogueLine, type Faction, type Item,
   type Location, type Objective, type UniverseRules, type Power, type Stats, type Story, type Universe,
 } from './types';
 
@@ -121,6 +121,28 @@ export function normalizeCharacter(raw: unknown, factionIds = new Set<string>(),
     itemIds: list(o.itemIds).filter((x): x is string => typeof x === 'string' && itemIds.has(x)).slice(0, 4),
     level: int(o.level, 1, 1, 60),
     xp: int(o.xp, 0, 0, 1e9),
+    mastery: normalizeMastery(o.mastery),
+  };
+}
+
+function normalizeMastery(raw: unknown): Record<string, number[]> {
+  const out: Record<string, number[]> = {};
+  for (const [k, v] of Object.entries(obj(raw)).slice(0, 12)) {
+    if (!/^[\w-]{1,64}$/.test(k) || !Array.isArray(v)) continue;
+    out[k] = Array.from({ length: MASTERY_TIER_COUNT }, (_, i) => int(v[i], 0, 0, 2));
+  }
+  return out;
+}
+
+export function normalizePerk(raw: unknown): ItemPerk | null {
+  if (!isObj(raw)) return null;
+  const type = oneOf(raw.type, PERK_TYPES, 'powerDamage');
+  const needsPower = type === 'powerDamage' || type === 'powerCooldown' || type === 'powerPotency';
+  return {
+    type,
+    power: needsPower ? oneOf(raw.power, POWER_KINDS, 'blast') : null,
+    element: type === 'elementDamage' ? oneOf(raw.element, ELEMENTS, 'energy') : null,
+    value: type === 'powerPotency' ? int(raw.value, 1, 1, 3) : int(raw.value, 10, 1, type === 'lifesteal' ? 15 : 40),
   };
 }
 
@@ -134,6 +156,8 @@ export function normalizeItem(raw: unknown): Item {
     description: str(o.description, ''),
     bonuses: normalizeBonuses(o.bonuses),
     color: color(o.color, '#ffd23e'),
+    level: int(o.level, 0, 0, MAX_ITEM_LEVEL),
+    perk: normalizePerk(o.perk),
   };
 }
 

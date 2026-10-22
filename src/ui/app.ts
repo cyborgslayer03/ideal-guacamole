@@ -11,10 +11,11 @@ import { bossOptions, planMission, resolveMission, type Mission, type NewsItem }
 import { nextChapterIndex, planChapter, type MissionPlan, type MissionResult } from '../core/missions';
 import { GameSession, type SessionOptions } from '../game/session';
 import type { EditorContext } from './context';
-import { checkbox } from './forms';
+import { checkbox, field, slider } from './forms';
 import { openPublishDialog, showHub } from './hub';
 import { clear, downloadText, h, pickFile, slug, toast } from './dom';
 import { modelLibrary } from '../game/models';
+import { audio } from '../game/audio';
 import { getPreview } from './preview';
 import { charactersTab } from './tabs/characters';
 import { itemsTab } from './tabs/items';
@@ -48,6 +49,15 @@ export class App {
   }
 
   start() {
+    // Browsers only allow sound after the first interaction.
+    const sfx = audio(this.settings.volume);
+    const unlock = () => sfx.unlock();
+    window.addEventListener('pointerdown', unlock, { capture: true });
+    window.addEventListener('keydown', unlock, { capture: true });
+    // A soft click for every menu button.
+    this.root.addEventListener('click', (e) => {
+      if ((e.target as HTMLElement).closest?.('.btn, .chip, .tab, .mastery-opt, .legend-card, .mission-card, .roster-card')) sfx.play('ui');
+    });
     this.showHome();
   }
 
@@ -152,6 +162,14 @@ export class App {
         h('section', { class: 'library' },
           h('h2', { class: 'panel-title' }, 'Settings'),
           checkbox(() => this.settings.bloom, (v) => ((this.settings.bloom = v), this.persistSettings()), 'Glow effects (turn off on slower devices)'),
+          h('div', { class: 'grid-3' },
+            ...(['master', 'music', 'sfx'] as const).map((k) => field(k === 'sfx' ? 'Effects volume' : k === 'music' ? 'Music volume' : 'Volume',
+              slider(() => this.settings.volume[k], (v) => {
+                this.settings.volume[k] = v;
+                audio().setVolumes(this.settings.volume);
+                this.persistSettings();
+              }, 0, 1, 0.05, (v) => `${Math.round(v * 100)}%`))),
+          ),
           h('label', { class: 'field hub-url' },
             h('span', { class: 'field-label' }, 'Hub server'),
             h('input', {
@@ -210,6 +228,7 @@ export class App {
     const campaign = this.library.loadCampaign(universe);
     const report = this.pendingReport;
     this.pendingReport = null;
+    if (report?.news.some((n) => n.kind === 'loot')) audio().play('loot');
 
     const ctx: EditorContext = {
       universe,

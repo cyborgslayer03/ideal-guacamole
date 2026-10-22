@@ -53,7 +53,7 @@ describe('rules', () => {
   const hero = structuredClone(u.characters[0]);
 
   it('applies item bonuses and caps effective stats', () => {
-    u.items.push({ id: 'itm_x', name: 'Test', slot: 'artifact', rarity: 'mythic', description: '', bonuses: { strength: 50 }, color: '#ffffff' });
+    u.items.push({ id: 'itm_x', name: 'Test', slot: 'artifact', rarity: 'mythic', description: '', bonuses: { strength: 50 }, color: '#ffffff', level: 0, perk: null });
     hero.itemIds = ['itm_x'];
     expect(effectiveStats(hero, u.items).strength).toBe(EFFECTIVE_STAT_MAX);
   });

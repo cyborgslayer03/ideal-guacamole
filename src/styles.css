@@ -592,3 +592,27 @@ input[type='password']:focus, input[type='search']:focus { outline: none; border
 .help { font-size: 0.85rem; color: var(--muted); line-height: 1.45; }
 .help summary { cursor: pointer; color: var(--accent); font-weight: 600; }
 .help ol { margin: 6px 0; padding-left: 20px; }
+
+/* --- Gear, armory, mastery ------------------------------------------------- */
+.item-summary { display: grid; gap: 2px; min-width: 0; }
+.item-name { font-weight: 700; color: var(--c); }
+.item-stars { color: var(--gold); font-size: 0.8rem; letter-spacing: 1px; }
+.item-meta { font-size: 0.85rem; color: var(--muted); }
+.item-perk { font-size: 0.85rem; color: var(--accent); }
+.shards { color: var(--accent); font-weight: 700; font-family: var(--font-display); }
+.armory-list { display: grid; gap: 8px; max-height: 520px; overflow: auto; }
+.armory-row { display: grid; grid-template-columns: 1fr auto; gap: 6px 12px; align-items: center; padding: 8px 10px; background: rgba(255,255,255,0.03); border: 1px solid var(--line); }
+.armory-row.equipped { border-color: var(--accent); }
+.armory-row > .muted { grid-column: 1; }
+@media (max-width: 640px) { .armory-row { grid-template-columns: 1fr; } }
+.news-loot .news-icon { color: var(--gold); }
+.mastery { display: grid; gap: 6px; margin-top: 6px; }
+.mastery-tier { display: grid; grid-template-columns: 56px 1fr 1fr; gap: 6px; align-items: stretch; }
+.mastery-tier .tier-label { font-size: 0.8rem; color: var(--muted); align-self: center; }
+.mastery-opt { text-align: left; padding: 6px 8px; background: rgba(255,255,255,0.03); border: 1px solid var(--line); font-size: 0.82rem; line-height: 1.25; }
+.mastery-opt b { display: block; font-size: 0.9rem; }
+.mastery-opt.active { border-color: var(--c, var(--accent)); background: color-mix(in srgb, var(--c, var(--accent)) 18%, transparent); }
+.mastery-opt:disabled { opacity: 0.4; cursor: not-allowed; }
+.mastery-badge { color: var(--gold); font-weight: 700; }
+.gear .item-perk { font-size: 0.75rem; }
+.btn:disabled { opacity: 0.4; cursor: not-allowed; filter: saturate(0.4); }

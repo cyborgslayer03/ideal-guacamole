@@ -2,7 +2,7 @@
 // rest), checked headlessly against the real combat simulation.
 
 import * as THREE from 'three';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { generateUniverse, randomPowerSet } from '../src/core/generator';
 import { Rng } from '../src/core/rng';
 import { POWER_INFO, POWER_LABELS, minionHealth, minionStats, powerCooldown, powerCost } from '../src/core/rules';
@@ -263,11 +263,13 @@ describe('powers in combat', () => {
     cast(combat, hero);
     expect(combat.enemiesOf(e)).not.toContain(hero);
     expect(combat.findTarget(e, 50)).toBeNull();
-    let normal = 0;
-    for (let i = 0; i < 10; i++) normal += combat.damage(foe(combat, 5 + i, 5), 100, { ...hero, stealth: 0 } as Actor, null);
+    // Pin the damage roll (no crits) so only the ambush bonus differs.
+    const roll = vi.spyOn(Math, 'random').mockReturnValue(0.99);
+    const normal = combat.damage(foe(combat, 5, 5), 100, { ...hero, stealth: 0 } as Actor, null);
     const ambush = combat.damage(e, 100, hero, null);
+    roll.mockRestore();
     expect(hero.stealth).toBe(0);
-    expect(ambush).toBeGreaterThan((normal / 10) * 1.5);
+    expect(ambush).toBeCloseTo(normal * 2, -1);
   });
 
   it('stretch yanks a minion in and pulls the caster to a boss', () => {

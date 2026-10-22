@@ -6,11 +6,13 @@ import {
   ELEMENT_COLORS, basicDamage, leapSlamRadius, maxEnergy, maxHealth, moveSpeed, powerCooldown, powerCost, powerDamage,
   regenRate, rollDamage, energyRegen, speedMultiplier, teleportRange,
 } from '../core/rules';
+import { EMPTY_LOADOUT, NO_MODS, boostedPower, type Loadout, type PowerMods } from '../core/progression';
 import { isTravel, takesSkillSlot, type Appearance, type Character, type Element, type Power, type Stats } from '../core/types';
 import { ARENA_RADIUS, THIN, floorAt, type Obstacle } from './arena';
 import type { Effects } from './effects';
 import { idleAnim, type AnimState, type HeroModel } from './model';
 import { createHeroModel } from './models';
+import type { Sfx } from './audio';
 
 export type Team = 'player' | 'enemy';
 export type Archetype = 'hero' | 'ally' | 'grunt' | 'gunner' | 'brute' | 'boss' | 'summon';
@@ -22,7 +24,9 @@ export const BLEED_OUT = 25;
 export const REVIVE_TIME = 2.5;
 
 export interface SkillSlot {
+  /** The power as cast: potency already raised by mastery and gear. */
   power: Power;
+  mods: PowerMods;
   cooldown: number;
   remaining: number;
   cost: number;
@@ -146,6 +150,8 @@ export class Actor {
     powers: Power[],
     healthOverride?: number,
     readonly character?: Character,
+    /** Mastery and gear perks. */
+    readonly loadout: Loadout = EMPTY_LOADOUT,
   ) {
     this.model = createHeroModel(appearance);
     this.maxHp = this.hp = healthOverride ?? maxHealth(stats, level);
@@ -164,7 +170,11 @@ export class Actor {
     this.skills = powers
       .filter((p) => takesSkillSlot(p.kind))
       .slice(0, 4)
-      .map((p) => ({ power: p, cooldown: powerCooldown(p, stats), remaining: 0, cost: powerCost(p) }));
+      .map((p) => {
+        const mods = loadout.mods[p.id] ?? NO_MODS;
+        const power = boostedPower(p, mods);
+        return { power, mods, cooldown: Math.round(powerCooldown(power, stats) * mods.cooldown * 10) / 10, remaining: 0, cost: Math.round(powerCost(power) * mods.cost) };
+      });
   }
 
   /** True once per interval while moving at super speed (drives afterimage trails). */
@@ -247,6 +257,12 @@ interface Zone {
 const projectileGeo = new THREE.SphereGeometry(1, 10, 8);
 const shieldGeo = new THREE.SphereGeometry(1, 20, 14);
 
+/** Signature sounds for power types; everything else uses its element's cast voice. */
+const CAST_SOUND: Partial<Record<Power['kind'], Sfx>> = {
+  nova: 'explosion', beam: 'beam', optic: 'beam', drain: 'beam', heal: 'heal', shield: 'shield', phase: 'shield',
+  timestop: 'freeze', summon: 'summon', sonic: 'sonic', web: 'webline', stretch: 'webline', grow: 'leap', gravity: 'explosion',
+};
+
 const isSquad = (a: Actor) => a.archetype === 'hero' || a.archetype === 'ally';
 
 export class Combat {
@@ -266,12 +282,18 @@ export class Combat {
   onDowned: (a: Actor) => void = () => {};
   onRevived: (a: Actor, by: Actor | null) => void = () => {};
   onPerfectDodge: (a: Actor) => void = () => {};
+  /** Sound cues; the session turns them into audio positioned around the camera. */
+  onSound: (name: Sfx, pos: THREE.Vector3, element?: Element) => void = () => {};
 
   constructor(
     private readonly scene: THREE.Scene,
     private readonly fx: Effects,
     private readonly obstacles: Obstacle[],
   ) {}
+
+  private sound(name: Sfx, pos: THREE.Vector3, element?: Element) {
+    this.onSound(name, pos, element);
+  }
 
   add(actor: Actor) {
     this.actors.push(actor);
@@ -320,6 +342,7 @@ export class Combat {
     a.vel.y = 12;
     a.grounded = false;
     a.jumps++;
+    this.sound('jump', a.pos);
     if (a.jumps === 2) this.fx.burst(a.pos.clone(), a.skills[0] ? ELEMENT_COLORS[a.skills[0].power.element] : '#ffffff', 8, 4);
     return true;
   }
@@ -366,6 +389,7 @@ export class Combat {
     this.keepInBounds(to, a.radius);
     this.fx.burst(a.center, color, 18, 6, 0.14);
     this.fx.ring(from, color, 2.5, 0.3);
+    this.sound('teleport', from, p.element);
     a.pos.copy(to);
     a.vel.set(0, 0, 0);
     if (target) a.faceToward(target.pos);
@@ -406,6 +430,7 @@ export class Combat {
     };
     this.fx.ring(a.pos, ELEMENT_COLORS[p.element], 3, 0.35);
     this.fx.burst(a.pos.clone().setY(0.3), '#d8c8b0', 12, 6);
+    this.sound('leap', a.pos, p.element);
     return true;
   }
 
@@ -437,6 +462,7 @@ export class Combat {
     const color = ELEMENT_COLORS[p.element];
     for (let i = 0; i < 4; i++) this.schedule(i * 0.12, () => a.alive && this.fx.beam(a.center, anchor, '#f4f4ff', 0.04, 0.14));
     this.fx.burst(anchor, color, 6, 2, 0.1);
+    this.sound('webline', a.pos, p.element);
     return true;
   }
 
@@ -449,6 +475,7 @@ export class Combat {
     this.fx.flare(a.pos.clone().setY(0.6), color, slam.radius * 0.6, 0.3);
     this.fx.burst(a.pos.clone().setY(0.4), '#d8c8b0', 22, 10);
     this.fx.shake(a.archetype === 'hero' ? 0.45 : 0.3);
+    this.sound('explosion', a.pos, slam.element);
     for (const e of this.enemiesOf(a)) {
       if (e.pos.distanceTo(a.pos) <= slam.radius + e.radius && Math.abs(e.pos.y - a.pos.y) < 2.5) this.damage(e, slam.damage, a, slam.element, 11);
     }
@@ -490,6 +517,7 @@ export class Combat {
   toggleFlight(a: Actor) {
     if (!a.canFly || a.stun > 0) return;
     a.flying = !a.flying;
+    this.sound('jump', a.pos);
     if (a.flying) {
       a.vel.y = 6;
       a.grounded = false;
@@ -504,6 +532,7 @@ export class Combat {
     a.vel.z = dir.z * 30;
     a.dodgeTimer = DODGE_TIME;
     a.dodgeCooldown = DODGE_COOLDOWN;
+    this.sound('dodge', a.pos);
     a.perfectWindow = 0.2;
     a.invuln = DODGE_TIME + 0.08;
     a.attackTimer = 0;
@@ -527,6 +556,7 @@ export class Combat {
       }
     }
     a.attackTimer = ATTACK_TIME;
+    this.sound('swing', a.pos);
     a.anim.attackArm = step % 2 === 0 ? 'right' : 'left';
     a.comboStep = (step + 1) % COMBO.length;
     a.comboWindow = ATTACK_TIME + COMBO_WINDOW;
@@ -569,10 +599,11 @@ export class Combat {
     a.attackTimer = 0;
     const p = s.power;
     const color = ELEMENT_COLORS[p.element];
-    const dmg = powerDamage(p, a.stats, a.level, this.powerScale) * (a.team === 'enemy' && a.archetype !== 'boss' ? 0.5 : 1);
+    const dmg = powerDamage(p, a.stats, a.level, this.powerScale) * (a.team === 'enemy' && a.archetype !== 'boss' ? 0.5 : 1) * s.mods.damage;
     const target = this.findTarget(a, 30);
     if (target) a.faceToward(target.pos);
     const fwd = a.forward();
+    this.sound(CAST_SOUND[p.kind] ?? 'cast', a.pos, p.element);
 
     switch (p.kind) {
       case 'blast': {
@@ -626,7 +657,7 @@ export class Combat {
         for (const ally of this.squadOf(a)) {
           if (ally !== a && ally.pos.distanceTo(a.pos) > 8) continue;
           ally.regen = 4;
-          ally.regenPerSec = ally.maxHp * (0.06 + p.potency * 0.012);
+          ally.regenPerSec = ally.maxHp * (0.06 + p.potency * 0.012) * s.mods.damage;
           if (ally !== a) this.fx.burst(ally.center, color, 10, 4, 0.12);
         }
         this.fx.burst(a.center, color, 20, 5, 0.15);
@@ -636,8 +667,27 @@ export class Combat {
       default:
         this.castExotic(a, p, dmg, target, fwd);
     }
+    this.masteryEffects(a, s, dmg);
     a.anim.cast = a.castTimer > 0 ? 0 : -1;
     return true;
+  }
+
+  /** Tier-3 mastery: Overload bursts around the caster, Lifeline heals them. */
+  private masteryEffects(a: Actor, s: SkillSlot, dmg: number) {
+    const color = ELEMENT_COLORS[s.power.element];
+    if (s.mods.overload) {
+      const raw = Math.max(dmg, basicDamage(a.stats, a.level)) * 0.4;
+      this.fx.ring(a.pos, color, 4.5, 0.4);
+      this.fx.burst(a.center, color, 16, 9, 0.14);
+      this.sound('explosion', a.pos, s.power.element);
+      for (const e of this.enemiesOf(a)) {
+        if (e.pos.distanceTo(a.pos) <= 4 + e.radius) this.damage(e, raw, a, s.power.element, 6);
+      }
+    }
+    if (s.mods.lifeline) {
+      this.heal(a, a.maxHp * 0.06);
+      this.fx.burst(a.center, '#3eff8b', 8, 3, 0.12);
+    }
   }
 
   /** The wider power set: web, optic, telekinesis, reality, mind control, and the rest. */
@@ -698,6 +748,7 @@ export class Combat {
             this.damage(t, dmg, a, p.element, 4);
             this.fx.ring(t.pos, color, 3);
             this.fx.burst(t.pos.clone().setY(t.pos.y + 0.3), '#d8c8b0', 14, 8);
+            this.sound('explosion', t.pos, p.element);
             this.fx.shake(0.25);
           });
         });
@@ -764,6 +815,7 @@ export class Combat {
             const victim = foes[Math.floor(Math.random() * foes.length)];
             const at = victim ? victim.pos.clone() : a.pos.clone().add(new THREE.Vector3(Math.random() * 16 - 8, 0, Math.random() * 16 - 8));
             this.fx.beam(at.clone().setY(at.y + 22), at, color, 0.25, 0.2);
+            this.sound('thunder', at, p.element);
             this.fx.flare(at.clone().setY(at.y + 0.5), color, 2.2, 0.2);
             this.fx.ring(at, color, 2.6, 0.3);
             for (const e of this.enemiesOf(a)) {
@@ -869,6 +921,7 @@ export class Combat {
     t.aiTarget = null;
     for (const e of this.actors) if (e.aiTarget === t) e.aiTarget = null;
     this.fx.ring(t.pos, ELEMENT_COLORS.psychic, 2.2, 0.6);
+    this.sound('charm', t.pos, 'psychic');
   }
 
   /** A short-lived ghostly duplicate of the caster that fights on its own. */
@@ -905,6 +958,7 @@ export class Combat {
     this.fx.ring(a.pos, '#ffffff', radius * 0.8, 0.5);
     this.fx.burst(a.center, color, 60, 22, 0.25);
     this.fx.shake(1.1);
+    this.sound('ultimate', a.pos, element);
     for (const e of this.enemiesOf(a)) {
       if (e.pos.distanceTo(a.pos) <= radius + e.radius) this.damage(e, raw, a, element, 18);
     }
@@ -948,6 +1002,7 @@ export class Combat {
       if (!a.alive) return;
       this.fx.ring(at, ELEMENT_COLORS[element], radius * 1.1);
       this.fx.burst(at.clone().setY(0.5), '#ffb080', 20, 10);
+      this.sound('explosion', at, element);
       this.fx.shake(0.3);
       for (const e of this.enemiesOf(a)) {
         if (e.pos.distanceTo(at) <= radius + e.radius && Math.abs(e.pos.y - at.y) < 2.5) this.damage(e, raw, a, element, 10);
@@ -975,6 +1030,7 @@ export class Combat {
         this.fx.burst(target.center, '#ffffff', 14, 8);
       }
     }
+    if (element && source) amount *= 1 + (source.loadout.elementDamage[element] ?? 0);
     if (target.growth > 0) amount *= 0.75;
     if (target.shrink > 0) amount *= 1.3;
     if (element === 'cosmic') amount *= 1.25;
@@ -985,10 +1041,12 @@ export class Combat {
     target.hp -= dealt;
     target.sinceHit = 0;
     target.model.hitFlash();
+    this.sound(roll.crit ? 'crit' : 'hit', target.pos);
     this.onDamage({ target, source, amount: dealt, crit: roll.crit });
 
     if (source) {
-      if (source.archetype === 'hero') source.ultimate = Math.min(100, source.ultimate + dealt / (basicDamage(source.stats, source.level) * 0.3));
+      if (source.archetype === 'hero') source.ultimate = Math.min(100, source.ultimate + (dealt * source.loadout.ultCharge) / (basicDamage(source.stats, source.level) * 0.3));
+      if (source.loadout.lifesteal > 0 && source !== target) this.heal(source, dealt * source.loadout.lifesteal);
       if (element === 'shadow' || element === 'nature') this.heal(source, dealt * 0.15);
       if (element === 'energy') source.energy = Math.min(source.maxEnergy, source.energy + 4);
     }
@@ -1018,6 +1076,7 @@ export class Combat {
     target.hp = 0;
     target.alive = false;
     this.fx.burst(target.center, '#ffffff', 16, 9);
+    this.sound(this.downedEnabled && isSquad(target) && !target.downed ? 'down' : 'death', target.pos);
     if (target.charm > 0) {
       target.charm = 0;
       target.team = target.homeTeam;
@@ -1058,6 +1117,7 @@ export class Combat {
       a.model.root.rotation.x = 0;
       this.fx.flare(a.center, '#3eff8b', 3, 0.5);
       this.fx.ring(a.pos, '#3eff8b', 4);
+      this.sound('revive', a.pos);
       this.onRevived(a, helper ?? null);
     } else if (a.bleedOut <= 0) {
       a.downed = false;
@@ -1088,6 +1148,7 @@ export class Combat {
       }
     }
     this.fx.shake(1.2);
+    this.sound('ultimate', leader.pos);
     return squad.length;
   }
 
@@ -1366,6 +1427,7 @@ export class Combat {
           }
         }
         if (hit || blocked) {
+          this.sound('impact', pos, p.element);
           this.fx.burst(pos.clone(), color, 10, 7);
           if (p.aoe > 0) this.fx.flare(pos.clone(), color, p.aoe, 0.25);
         }

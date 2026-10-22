@@ -14,12 +14,14 @@ import {
   RARITY_COLORS, THREAT_TIERS, basicDamage, effectiveStats, grantXp, maxHealth, minionHealth, minionStats, resolveRules, tierById, xpReward,
   type RuleKey, type ThreatTier,
 } from '../core/rules';
-import type { Appearance, Character, Location, Universe, UniverseRules } from '../core/types';
+import type { Appearance, Character, Element, Location, Universe, UniverseRules } from '../core/types';
 import { AmbientDirector, type AmbientHost } from './ambient';
 import { h } from '../ui/dom';
 import { updateAlly, updateEnemy, type SquadContext, type SquadOrder } from './ai';
 import { ARENA_RADIUS, buildArena, type Arena } from './arena';
 import { Actor, Combat } from './combat';
+import { audio, type Intensity, type Sfx } from './audio';
+import { loadoutFor, masteryUnlocked } from '../core/progression';
 import { Effects } from './effects';
 import { Hud } from './hud';
 import { Input } from './input';
@@ -119,6 +121,7 @@ export class GameSession {
   private ambientInSandbox = false;
   /** Friendly characters fighting alongside for a while (ambient distress calls). */
   private helpers: Actor[] = [];
+  private musicTimer = 0;
   private portals: { group: THREE.Group; pos: THREE.Vector3; location: Location }[] = [];
   private travelling = false;
   private feedTimer = 0;
@@ -195,7 +198,7 @@ export class GameSession {
     combat.gravityScale = this.rules.gravity;
 
     const c = this.character;
-    const player = new Actor(c.alias, 'player', 'hero', effectiveStats(c, u.items), c.level, c.appearance, c.powers, undefined, c);
+    const player = new Actor(c.alias, 'player', 'hero', effectiveStats(c, u.items), c.level, c.appearance, c.powers, undefined, c, loadoutFor(c, u.items));
     combat.add(player);
 
     // The AI squad forms up behind the hero.
@@ -203,7 +206,7 @@ export class GameSession {
     allyIds.forEach((id, i) => {
       const ch = u.characters.find((x) => x.id === id);
       if (!ch) return;
-      const a = new Actor(ch.alias, 'player', 'ally', effectiveStats(ch, u.items), ch.level, ch.appearance, ch.powers, undefined, ch);
+      const a = new Actor(ch.alias, 'player', 'ally', effectiveStats(ch, u.items), ch.level, ch.appearance, ch.powers, undefined, ch, loadoutFor(ch, u.items));
       a.pos.set((i - (allyIds.length - 1) / 2) * 3, 0, 3);
       combat.add(a);
       allies.push(a);
@@ -235,8 +238,10 @@ export class GameSession {
     combat.onKill = (target) => this.onKill(target);
     combat.onDowned = (a) => this.onDowned(a);
     combat.onRevived = (a, by) => this.stage?.hud.banner(`${a.name} is back up`, by ? `Revived by ${by.name}` : '', 1.6);
+    combat.onSound = (name, pos, element) => this.playSound(name, pos, element);
     combat.onPerfectDodge = (a) => {
       if (a !== this.stage?.player) return;
+      audio().play('perfect');
       this.slowmo = Math.max(this.slowmo, 0.8);
       a.ultimate = Math.min(100, a.ultimate + 15);
       hud.banner('Perfect Dodge', '+15 ultimate charge', 1);
@@ -328,7 +333,7 @@ export class GameSession {
     const stats = effectiveStats(character, this.opts.universe.items);
     const t = this.opts.plan ? null : this.tier;
     const lvl = Math.max(1, Math.max(character.level, level) + (t?.levelBonus ?? 0));
-    const boss = new Actor(character.alias, 'enemy', 'boss', stats, lvl, character.appearance, character.powers, Math.round(maxHealth(stats, lvl) * 4 * power * (t?.health ?? 1)), character);
+    const boss = new Actor(character.alias, 'enemy', 'boss', stats, lvl, character.appearance, character.powers, Math.round(maxHealth(stats, lvl) * 4 * power * (t?.health ?? 1)), character, loadoutFor(character, this.opts.universe.items));
     boss.damageMult = t?.damage ?? 1;
     if (power > 1) boss.title = 'Nemesis';
     if (at) boss.pos.copy(at);
@@ -379,6 +384,7 @@ export class GameSession {
     };
     const run = this.run;
     s.hud.setObjective('');
+    audio().play('banner');
     s.hud.banner(plan.title, plan.teamName ? `${plan.teamName} assemble!` : plan.subtitle, 2.6);
     this.paused = true;
     await wait(1200);
@@ -619,6 +625,7 @@ export class GameSession {
       }
     }
     s.hud.banner('Mission Complete', r.plan.title, 2.4);
+    audio().play('banner');
     await wait(2200);
     if (this.disposed || this.run !== r) return;
     this.paused = true;
@@ -836,11 +843,15 @@ export class GameSession {
     const s = this.stage;
     if (!s) return;
     const p = s.player;
+    const before = p.level;
     p.level = p.character?.level ?? this.character.level;
     p.maxHp = maxHealth(p.stats, p.level);
     p.hp = p.maxHp;
     p.energy = p.maxEnergy;
-    s.hud.banner('Level Up!', `Level ${p.level}`, 1.8);
+    // New mastery tiers are chosen in the creator and apply from the next fight.
+    const unlocked = masteryUnlocked(before, p.level);
+    s.hud.banner('Level Up!', unlocked.length ? `Level ${p.level} · Mastery tier unlocked: choose it in Characters` : `Level ${p.level}`, unlocked.length ? 2.6 : 1.8);
+    audio().play('levelup');
     s.fx.flare(p.center, '#ffd23e', 4, 0.6);
     s.fx.ring(p.pos, '#ffd23e', 5, 0.6);
     this.opts.onSave();
@@ -867,7 +878,7 @@ export class GameSession {
     const s = this.stage;
     if (!s || s.allies.length >= 3 || [s.player, ...s.allies].some((a) => a.character?.id === ch.id)) return;
     const u = this.opts.universe;
-    const a = new Actor(ch.alias, 'player', 'ally', effectiveStats(ch, u.items), ch.level, ch.appearance, ch.powers, undefined, ch);
+    const a = new Actor(ch.alias, 'player', 'ally', effectiveStats(ch, u.items), ch.level, ch.appearance, ch.powers, undefined, ch, loadoutFor(ch, u.items));
     a.pos.copy(s.player.pos).add(new THREE.Vector3(2.5, 0, 2.5));
     s.combat.add(a);
     s.allies.push(a);
@@ -919,7 +930,7 @@ export class GameSession {
         return b;
       },
       spawnHelper: (ch, at) => {
-        const a = new Actor(ch.alias, 'player', 'ally', effectiveStats(ch, u.items), ch.level, ch.appearance, ch.powers, undefined, ch);
+        const a = new Actor(ch.alias, 'player', 'ally', effectiveStats(ch, u.items), ch.level, ch.appearance, ch.powers, undefined, ch, loadoutFor(ch, u.items));
         a.pos.copy(at);
         s.combat.add(a);
         s.fx.flare(a.center, ch.appearance.accent, 2.5, 0.4);
@@ -1211,7 +1222,7 @@ export class GameSession {
       h('p', null, 'J / click — combo attack · Shift — dodge'),
       h('p', null, 'Q E R F — powers · X — ultimate'),
       h('p', null, 'V — movement power: toggle flight (Space/C rise/fall), teleport, super leap, or web swing'),
-      h('p', null, 'Right-drag or arrow keys — camera · Wheel — zoom'),
+      h('p', null, 'Right-drag or arrow keys — camera · Wheel — zoom · M — mute'),
       this.run && h('p', null, 'Abandoning a mission leaves the world unchanged.'),
     ), [
       { label: 'Resume', primary: true, onClick: () => this.togglePause() },
@@ -1225,6 +1236,10 @@ export class GameSession {
     const realDt = Math.min(0.05, (now - this.last) / 1000);
     this.last = now;
     if (this.input.consume('pause')) this.togglePause();
+    if (this.input.consume('mute')) {
+      const muted = audio().toggleMute();
+      this.stage?.hud.banner(muted ? 'Sound off' : 'Sound on', 'M to toggle', 0.9);
+    }
 
     const s = this.stage;
     if (!s) return;
@@ -1269,6 +1284,7 @@ export class GameSession {
       s.hud.setFeed(this.ambient?.feed() ?? []);
     }
     s.arena.update(this.time);
+    this.updateMusic(s, realDt);
     const shake = s.fx.update(dt);
     this.updateCamera(s, realDt, shake);
     s.hud.update(realDt, this.camera, s.combat.actors.filter((a) => a.team === 'enemy'));
@@ -1332,9 +1348,33 @@ export class GameSession {
     this.opts.onExit();
   }
 
+  /** Plays a combat sound panned by where it is on screen and quieter with distance. */
+  private playSound(name: Sfx, pos: THREE.Vector3, element?: Element) {
+    const s = this.stage;
+    if (!s) return;
+    const local = pos.clone().applyMatrix4(this.camera.matrixWorldInverse);
+    const dist = pos.distanceTo(s.player.pos);
+    const gain = Math.max(0.12, Math.min(1, 1.15 - dist / 40));
+    audio().play(name, { element, pan: Math.max(-0.8, Math.min(0.8, local.x / Math.max(4, -local.z))), gain });
+  }
+
+  /** Music follows the action: calm when exploring, drums in a fight, a lead line for bosses. */
+  private updateMusic(s: Stage, realDt: number) {
+    this.musicTimer -= realDt;
+    if (this.musicTimer > 0) return;
+    this.musicTimer = 0.5;
+    const sfx = audio();
+    sfx.startMusic();
+    const foes = s.combat.actors.filter((a) => a.alive && a.team === 'enemy');
+    const near = (a: { pos: THREE.Vector3 }, r: number) => a.pos.distanceTo(s.player.pos) < r;
+    const level: Intensity = foes.some((a) => a.archetype === 'boss' && near(a, 45)) ? 2 : foes.some((a) => near(a, 30)) ? 1 : 0;
+    sfx.setIntensity(level);
+  }
+
   dispose() {
     if (this.disposed) return;
     this.disposed = true;
+    audio().stopMusic();
     cancelAnimationFrame(this.frame);
     window.removeEventListener('resize', this.onResize);
     this.teardownStage();
