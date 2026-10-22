@@ -13,7 +13,7 @@ import { Actor, BLEED_OUT, Combat } from '../src/game/combat';
 import { Effects } from '../src/game/effects';
 
 const DT = 1 / 60;
-const look: Appearance = { primary: '#ff0000', secondary: '#000000', accent: '#333333', build: 'athletic', height: 1, head: 'helmet', emblem: 'none', cape: false, aura: false };
+const look: Appearance = { primary: '#ff0000', secondary: '#000000', accent: '#333333', build: 'athletic', height: 1, head: 'helmet', emblem: 'none', cape: false, aura: false, model: null };
 
 function arena() {
   const scene = new THREE.Scene();

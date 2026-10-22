@@ -298,6 +298,7 @@ export class GameSession {
       emblem: elite ? 'star' : 'none',
       cape: elite,
       aura: elite,
+      model: null,
     };
     const stats = minionStats(lvl, type);
     const name = `${elite ? 'Elite ' : ''}${type === 'brute' ? 'Brute' : type === 'gunner' ? 'Gunner' : 'Trooper'}`;
@@ -1252,7 +1253,7 @@ export class GameSession {
       this.updateRun(dt);
       // Dead actors topple and sink.
       for (const a of s.combat.actors) {
-        if (!a.alive) {
+        if (!a.alive && !a.model.animatesDeath) {
           a.model.root.rotation.x = Math.max(-Math.PI / 2, a.model.root.rotation.x - dt * 5);
           if (a.model.root.rotation.x <= -Math.PI / 2 + 0.01 && a.team !== 'player') a.model.root.position.y -= dt * 0.8;
         }

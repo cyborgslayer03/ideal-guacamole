@@ -3,14 +3,18 @@
 
 import * as THREE from 'three';
 import type { Appearance } from '../core/types';
-import { CharacterModel, idleAnim } from '../game/model';
+import { idleAnim, type HeroModel } from '../game/model';
+import { createHeroModel, modelLibrary } from '../game/models';
 
 class CharacterPreview {
   readonly canvas: HTMLCanvasElement;
   private readonly renderer: THREE.WebGLRenderer;
   private readonly scene = new THREE.Scene();
   private readonly camera = new THREE.PerspectiveCamera(32, 1, 0.1, 50);
-  private model: CharacterModel | null = null;
+  private model: HeroModel | null = null;
+  private request = 0;
+  /** Called when an imported model finishes loading or fails (for status text). */
+  onModelStatus: ((error: string | null) => void) | null = null;
   private readonly pedestal: THREE.Mesh;
   private readonly ringMat: THREE.MeshBasicMaterial;
   private frame = 0;
@@ -64,13 +68,27 @@ class CharacterPreview {
   }
 
   setAppearance(app: Appearance, accent: string) {
+    this.ringMat.color.set(accent);
+    const req = ++this.request;
+    this.show(createHeroModel(app));
+    // Imported models load in the background; swap them in when ready.
+    if (app.model && !modelLibrary.isReady(app.model)) {
+      const snapshot = structuredClone(app);
+      void modelLibrary.preload(snapshot).then((err) => {
+        if (req !== this.request) return;
+        if (!err) this.show(createHeroModel(snapshot));
+        this.onModelStatus?.(err);
+      });
+    } else this.onModelStatus?.(null);
+  }
+
+  private show(model: HeroModel) {
     if (this.model) {
       this.scene.remove(this.model.root);
       this.model.dispose();
     }
-    this.model = new CharacterModel(app);
-    this.scene.add(this.model.root);
-    this.ringMat.color.set(accent);
+    this.model = model;
+    this.scene.add(model.root);
   }
 
   start() {

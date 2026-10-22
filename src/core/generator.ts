@@ -165,6 +165,7 @@ export function randomAppearance(rng: Rng): Appearance {
     emblem: rng.pick(EMBLEMS),
     cape: rng.chance(0.35),
     aura: rng.chance(0.3),
+    model: null,
   };
 }
 

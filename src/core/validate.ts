@@ -5,9 +5,9 @@
 import { clamp } from './rules';
 import { newId } from './id';
 import {
-  BIOMES, BUILDS, ELEMENTS, EMBLEMS, HEAD_STYLES, ITEM_SLOTS, POWER_KINDS, RARITIES, ROLES,
+  BIOMES, BUILDS, MODEL_STATES, ELEMENTS, EMBLEMS, HEAD_STYLES, ITEM_SLOTS, POWER_KINDS, RARITIES, ROLES,
   SCHEMA_VERSION, STAT_KEYS,
-  type Appearance, type Chapter, type ChapterCondition, type ChoiceOption, type StoryChoice, type Character, type DialogueLine, type Faction, type Item,
+  type Appearance, type Chapter, type ModelRef, type ModelState, type ChapterCondition, type ChoiceOption, type StoryChoice, type Character, type DialogueLine, type Faction, type Item,
   type Location, type Objective, type UniverseRules, type Power, type Stats, type Story, type Universe,
 } from './types';
 
@@ -75,6 +75,20 @@ export function normalizePower(raw: unknown): Power {
   };
 }
 
+const MODEL_SRC = /^(builtin:[a-z0-9-]{1,40}|asset:[\w-]{1,64}|https:\/\/[^\s"'<>]{1,500})$/;
+
+/** Validates an imported-model reference; anything malformed means "no model". */
+export function normalizeModelRef(raw: unknown): ModelRef | null {
+  if (!isObj(raw) || typeof raw.src !== 'string' || !MODEL_SRC.test(raw.src)) return null;
+  const clips: Partial<Record<ModelState, string>> = {};
+  const rc = obj(raw.clips);
+  for (const state of MODEL_STATES) {
+    const v = rc[state];
+    if (typeof v === 'string' && (MODEL_SRC.test(v) || /^clip:.{1,80}$/.test(v))) clips[state] = v;
+  }
+  return { src: raw.src, scale: num(raw.scale, 1, 0.3, 3), yaw: num(raw.yaw, 0, -180, 180), tint: raw.tint === true, clips };
+}
+
 export function normalizeAppearance(raw: unknown): Appearance {
   const o = obj(raw);
   return {
@@ -87,6 +101,7 @@ export function normalizeAppearance(raw: unknown): Appearance {
     emblem: oneOf(o.emblem, EMBLEMS, 'star'),
     cape: o.cape === true,
     aura: o.aura === true,
+    model: normalizeModelRef(o.model),
   };
 }
 

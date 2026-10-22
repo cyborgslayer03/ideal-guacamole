@@ -6,6 +6,19 @@ import type { Appearance, Emblem } from '../core/types';
 
 const BUILD_WIDTH = { slim: 0.85, athletic: 1, heavy: 1.3 } as const;
 
+/** What every character body (procedural or imported) can do. */
+export interface HeroModel {
+  readonly root: THREE.Group;
+  readonly height: number;
+  /** True if the model plays its own death animation (no need to topple it). */
+  readonly animatesDeath: boolean;
+  update(dt: number, s: AnimState): void;
+  hitFlash(): void;
+  /** 1 is solid; lower values fade the model (stealth, phasing, echoes). */
+  setOpacity(alpha: number): void;
+  dispose(): void;
+}
+
 export interface AnimState {
   /** 0 = idle, 1 = full run. */
   moveBlend: number;
@@ -17,10 +30,11 @@ export interface AnimState {
   attackArm: 'left' | 'right';
   /** 0-1 progress of a power cast pose, or -1. */
   cast: number;
+  dead: boolean;
 }
 
 export function idleAnim(): AnimState {
-  return { moveBlend: 0, airborne: false, flying: false, attack: -1, attackArm: 'right', cast: -1 };
+  return { moveBlend: 0, airborne: false, flying: false, attack: -1, attackArm: 'right', cast: -1, dead: false };
 }
 
 function emblemShape(kind: Emblem): THREE.Shape | null {
@@ -64,7 +78,8 @@ function emblemShape(kind: Emblem): THREE.Shape | null {
   return s;
 }
 
-export class CharacterModel {
+export class CharacterModel implements HeroModel {
+  readonly animatesDeath = false;
   readonly root = new THREE.Group();
   /** Everything that tilts/bobs; `root` holds position and facing. */
   private readonly body = new THREE.Group();
@@ -334,6 +349,14 @@ export class CharacterModel {
         m.emissive.copy(m.userData.baseEmissive as THREE.Color).lerp(new THREE.Color(1, 1, 1), this.flash);
         m.emissiveIntensity = Math.max(m.userData.baseIntensity as number, this.flash * 1.5);
       }
+    }
+  }
+
+  setOpacity(alpha: number) {
+    for (const m of this.materials) {
+      m.transparent = alpha < 1;
+      m.opacity = alpha;
+      m.depthWrite = alpha >= 1;
     }
   }
 

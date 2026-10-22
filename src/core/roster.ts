@@ -41,7 +41,7 @@ export const LEGENDS: LegendSpec[] = [
     origin: 'A soldier fused with an alien alloy shield during a meteor strike on her base.',
     bio: 'Aegis Prime leads from the front line and has never left a teammate behind.',
     stats: s(8, 5, 10, 5, 6, 9),
-    appearance: { primary: '#1f6f8b', secondary: '#d8dde6', accent: '#f2b632', build: 'heavy', height: 1.08, head: 'helmet', emblem: 'star', cape: false, aura: false },
+    appearance: { primary: '#1f6f8b', secondary: '#d8dde6', accent: '#f2b632', build: 'heavy', height: 1.08, head: 'helmet', emblem: 'star', cape: false, aura: false, model: null },
     powers: [
       { name: 'Ricochet Disc', kind: 'blast', element: 'kinetic', potency: 6, description: 'Hurls her shield in a banking arc.' },
       { name: 'Bastion Charge', kind: 'dash', element: 'kinetic', potency: 7, description: 'A shield-first charge that scatters crowds.' },
@@ -59,7 +59,7 @@ export const LEGENDS: LegendSpec[] = [
     origin: 'Struck by lightning while racing a particle accelerator test.',
     bio: 'Voltstream talks fast, thinks faster, and is always the first one on the scene.',
     stats: s(5, 10, 5, 7, 6, 8),
-    appearance: { primary: '#d6a31a', secondary: '#7a1020', accent: '#ffe93e', build: 'slim', height: 0.98, head: 'visor', emblem: 'bolt', cape: false, aura: true },
+    appearance: { primary: '#d6a31a', secondary: '#7a1020', accent: '#ffe93e', build: 'slim', height: 0.98, head: 'visor', emblem: 'bolt', cape: false, aura: true, model: null },
     powers: [
       { name: 'Static Barrage', kind: 'blast', element: 'lightning', potency: 6, description: 'A flurry of sparks thrown at a dead sprint.' },
       { name: 'Thunder Rush', kind: 'dash', element: 'lightning', potency: 8, description: 'Becomes a bolt of lightning and tears through a line of foes.' },
@@ -76,7 +76,7 @@ export const LEGENDS: LegendSpec[] = [
     origin: 'Chosen by a dying star as the vessel for its last light.',
     bio: 'Seraph believes everyone deserves a second dawn, even her enemies.',
     stats: s(5, 7, 6, 10, 7, 6),
-    appearance: { primary: '#f1e6c8', secondary: '#c4642a', accent: '#ffc23e', build: 'athletic', height: 1.02, head: 'bare', emblem: 'circle', cape: true, aura: true },
+    appearance: { primary: '#f1e6c8', secondary: '#c4642a', accent: '#ffc23e', build: 'athletic', height: 1.02, head: 'bare', emblem: 'circle', cape: true, aura: true, model: null },
     powers: [
       { name: 'Dawnfire Bolt', kind: 'blast', element: 'fire', potency: 7, description: 'Spears of condensed sunlight.' },
       { name: 'Solar Lance', kind: 'beam', element: 'fire', potency: 8, description: 'A continuous beam hot enough to cut steel.' },
@@ -93,7 +93,7 @@ export const LEGENDS: LegendSpec[] = [
     origin: 'Trained by a hidden order that walks between shadows.',
     bio: 'Nightveil strikes once, vanishes, and is already behind you.',
     stats: s(6, 9, 4, 6, 8, 10),
-    appearance: { primary: '#1b1730', secondary: '#0b0b12', accent: '#8a5cff', build: 'slim', height: 1.0, head: 'cowl', emblem: 'diamond', cape: true, aura: false },
+    appearance: { primary: '#1b1730', secondary: '#0b0b12', accent: '#8a5cff', build: 'slim', height: 1.0, head: 'cowl', emblem: 'diamond', cape: true, aura: false, model: null },
     powers: [
       { name: 'Shadow Shuriken', kind: 'blast', element: 'shadow', potency: 6, description: 'Blades of solid darkness that drain life.' },
       { name: 'Eclipse Strike', kind: 'dash', element: 'shadow', potency: 8, description: 'A blur of cuts through everyone in the way.' },
@@ -110,7 +110,7 @@ export const LEGENDS: LegendSpec[] = [
     origin: 'A neuroscientist whose mind expanded after a failed consciousness experiment.',
     bio: 'Mindwarden sees every move a second before it happens.',
     stats: s(3, 6, 5, 9, 10, 6),
-    appearance: { primary: '#5b2a86', secondary: '#20123a', accent: '#ff4fd8', build: 'slim', height: 1.0, head: 'visor', emblem: 'triangle', cape: true, aura: true },
+    appearance: { primary: '#5b2a86', secondary: '#20123a', accent: '#ff4fd8', build: 'slim', height: 1.0, head: 'visor', emblem: 'triangle', cape: true, aura: true, model: null },
     powers: [
       { name: 'Psi Lance', kind: 'beam', element: 'psychic', potency: 7, description: 'A focused thought that locks enemies in place.' },
       { name: 'Mind Quake', kind: 'nova', element: 'psychic', potency: 8, description: 'A psychic scream that stuns everyone nearby.' },
@@ -128,7 +128,7 @@ export const LEGENDS: LegendSpec[] = [
     origin: 'Built a combat suit from salvaged war machines to defend his city.',
     bio: 'Ironclad Ranger has a gadget for everything, and a backup for the gadget.',
     stats: s(7, 6, 8, 7, 9, 5),
-    appearance: { primary: '#8c1c1c', secondary: '#3a3f4a', accent: '#3ee8ff', build: 'athletic', height: 1.05, head: 'helmet', emblem: 'circle', cape: false, aura: false },
+    appearance: { primary: '#8c1c1c', secondary: '#3a3f4a', accent: '#3ee8ff', build: 'athletic', height: 1.05, head: 'helmet', emblem: 'circle', cape: false, aura: false, model: null },
     powers: [
       { name: 'Repulsor Volley', kind: 'blast', element: 'tech', potency: 7, description: 'Palm-mounted energy cannons.' },
       { name: 'Arc Cannon', kind: 'beam', element: 'energy', potency: 8, description: 'The chest reactor fires at full output.' },
@@ -147,7 +147,7 @@ export const LEGENDS: LegendSpec[] = [
     origin: 'A deposed monarch who returned from an arctic exile with a heart of ice.',
     bio: 'Kryos wants a silent, frozen world where nothing can ever change again.',
     stats: s(7, 5, 9, 9, 8, 6),
-    appearance: { primary: '#bfe4ff', secondary: '#1d3b5c', accent: '#8fd8ff', build: 'heavy', height: 1.12, head: 'helmet', emblem: 'diamond', cape: true, aura: true },
+    appearance: { primary: '#bfe4ff', secondary: '#1d3b5c', accent: '#8fd8ff', build: 'heavy', height: 1.12, head: 'helmet', emblem: 'diamond', cape: true, aura: true, model: null },
     powers: [
       { name: 'Glacial Beam', kind: 'beam', element: 'ice', potency: 8, description: 'Freezes everything in a long line.' },
       { name: 'Absolute Zero', kind: 'nova', element: 'ice', potency: 9, description: 'The air itself freezes around him.' },
@@ -165,7 +165,7 @@ export const LEGENDS: LegendSpec[] = [
     origin: 'Sold her shadow to an entity beyond the stars in exchange for its power.',
     bio: 'Hexmother collects heroes the way others collect curios.',
     stats: s(4, 6, 6, 10, 9, 6),
-    appearance: { primary: '#2a0f3a', secondary: '#0d0614', accent: '#b06bff', build: 'slim', height: 1.04, head: 'cowl', emblem: 'triangle', cape: true, aura: true },
+    appearance: { primary: '#2a0f3a', secondary: '#0d0614', accent: '#b06bff', build: 'slim', height: 1.04, head: 'cowl', emblem: 'triangle', cape: true, aura: true, model: null },
     powers: [
       { name: 'Hex Bolt', kind: 'blast', element: 'cosmic', potency: 8, description: 'Orbs of starless void.' },
       { name: 'Void Rift', kind: 'nova', element: 'shadow', potency: 8, description: 'Tears open space and drinks the life around her.' },
@@ -182,7 +182,7 @@ export const LEGENDS: LegendSpec[] = [
     origin: 'A prison experiment in muscle-density serum that worked far too well.',
     bio: 'Juggernox does not stop. He has never needed to.',
     stats: s(10, 4, 10, 4, 3, 8),
-    appearance: { primary: '#6b3a1e', secondary: '#2a2a2a', accent: '#ff6a1f', build: 'heavy', height: 1.2, head: 'helmet', emblem: 'none', cape: false, aura: false },
+    appearance: { primary: '#6b3a1e', secondary: '#2a2a2a', accent: '#ff6a1f', build: 'heavy', height: 1.2, head: 'helmet', emblem: 'none', cape: false, aura: false, model: null },
     powers: [
       { name: 'Rampage', kind: 'dash', element: 'kinetic', potency: 9, description: 'A charge through walls, cars, and heroes.' },
       { name: 'Earthshatter', kind: 'nova', element: 'kinetic', potency: 9, description: 'Splits the ground with both fists.' },
@@ -199,7 +199,7 @@ export const LEGENDS: LegendSpec[] = [
     origin: 'Stole the experimental speed formula meant for a hero program.',
     bio: 'Blitzkrieg wants to be the fastest thing alive, and to watch everything else burn.',
     stats: s(6, 10, 5, 7, 5, 8),
-    appearance: { primary: '#2b2b2b', secondary: '#7a1a0a', accent: '#ff6a1f', build: 'slim', height: 0.98, head: 'mask', emblem: 'bolt', cape: false, aura: true },
+    appearance: { primary: '#2b2b2b', secondary: '#7a1a0a', accent: '#ff6a1f', build: 'slim', height: 0.98, head: 'mask', emblem: 'bolt', cape: false, aura: true, model: null },
     powers: [
       { name: 'Scorch Dash', kind: 'dash', element: 'fire', potency: 8, description: 'A blur that leaves a wall of fire behind.' },
       { name: 'Flame Cyclone', kind: 'nova', element: 'fire', potency: 7, description: 'Runs a burning ring around his victims.' },
@@ -217,7 +217,7 @@ export const LEGENDS: LegendSpec[] = [
     origin: 'Trapped himself in a time loop and came back with a thousand years of plans.',
     bio: 'Doctor Paradox has already seen how this fight ends. Probably.',
     stats: s(4, 6, 6, 8, 10, 6),
-    appearance: { primary: '#1d4d4a', secondary: '#101a1a', accent: '#3eff8b', build: 'athletic', height: 1.0, head: 'visor', emblem: 'circle', cape: true, aura: false },
+    appearance: { primary: '#1d4d4a', secondary: '#101a1a', accent: '#3eff8b', build: 'athletic', height: 1.0, head: 'visor', emblem: 'circle', cape: true, aura: false, model: null },
     powers: [
       { name: 'Chrono Beam', kind: 'beam', element: 'energy', potency: 8, description: 'Ages whatever it touches.' },
       { name: 'Drone Swarm', kind: 'blast', element: 'tech', potency: 7, description: 'A swarm of explosive micro-drones.' },
@@ -234,7 +234,7 @@ export const LEGENDS: LegendSpec[] = [
     origin: 'A botanist who merged with the poison garden she was trying to save.',
     bio: 'Venomancer will return the cities to the jungle, one hero at a time.',
     stats: s(6, 8, 7, 7, 6, 7),
-    appearance: { primary: '#2f6b2a', secondary: '#16240f', accent: '#b6ff3e', build: 'athletic', height: 1.0, head: 'mask', emblem: 'diamond', cape: false, aura: true },
+    appearance: { primary: '#2f6b2a', secondary: '#16240f', accent: '#b6ff3e', build: 'athletic', height: 1.0, head: 'mask', emblem: 'diamond', cape: false, aura: true, model: null },
     powers: [
       { name: 'Toxic Spit', kind: 'blast', element: 'nature', potency: 7, description: 'Corrosive venom that heals her as it burns.' },
       { name: 'Spore Cloud', kind: 'nova', element: 'nature', potency: 7, description: 'A choking burst of spores.' },

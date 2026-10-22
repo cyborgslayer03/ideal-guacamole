@@ -78,6 +78,18 @@ export function pickFile(accept = '.json'): Promise<string | null> {
   });
 }
 
+/** Picks a binary file (3D models). Resolves null if cancelled. */
+export function pickBinaryFile(accept: string): Promise<{ name: string; data: ArrayBuffer } | null> {
+  return new Promise((resolve) => {
+    const input = h('input', { type: 'file', accept });
+    input.addEventListener('change', async () => {
+      const file = input.files?.[0];
+      resolve(file ? { name: file.name, data: await file.arrayBuffer() } : null);
+    });
+    input.click();
+  });
+}
+
 export function slug(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'export';
 }

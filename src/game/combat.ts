@@ -9,7 +9,8 @@ import {
 import { isMovement, type Appearance, type Character, type Element, type Power, type Stats } from '../core/types';
 import { ARENA_RADIUS, THIN, floorAt, type Obstacle } from './arena';
 import type { Effects } from './effects';
-import { CharacterModel, idleAnim, type AnimState } from './model';
+import { idleAnim, type AnimState, type HeroModel } from './model';
+import { createHeroModel } from './models';
 
 export type Team = 'player' | 'enemy';
 export type Archetype = 'hero' | 'ally' | 'grunt' | 'gunner' | 'brute' | 'boss';
@@ -35,7 +36,7 @@ const DODGE_COOLDOWN = 0.7;
 const GRAVITY = 30;
 
 export class Actor {
-  readonly model: CharacterModel;
+  readonly model: HeroModel;
   readonly pos = new THREE.Vector3();
   readonly vel = new THREE.Vector3();
   /** Desired horizontal movement direction, magnitude 0-1. */
@@ -117,7 +118,7 @@ export class Actor {
     healthOverride?: number,
     readonly character?: Character,
   ) {
-    this.model = new CharacterModel(appearance);
+    this.model = createHeroModel(appearance);
     this.maxHp = this.hp = healthOverride ?? maxHealth(stats, level);
     this.maxEnergy = this.energy = maxEnergy(stats);
     const sizeBonus = archetype === 'brute' ? 1.4 : archetype === 'boss' ? 1.25 : 1;
@@ -803,7 +804,8 @@ export class Combat {
     a.anim.moveBlend = Math.min(1, horizontal / Math.max(1, a.speed));
     a.anim.airborne = !a.grounded && !a.flying;
     a.anim.flying = a.flying;
-    if (a.alive) a.model.update(dt, a.anim);
+    a.anim.dead = !a.alive;
+    if (a.alive || a.model.animatesDeath) a.model.update(dt, a.anim);
   }
 
   private move(a: Actor, dt: number) {

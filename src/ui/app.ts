@@ -14,6 +14,7 @@ import type { EditorContext } from './context';
 import { checkbox } from './forms';
 import { openPublishDialog, showHub } from './hub';
 import { clear, downloadText, h, pickFile, slug, toast } from './dom';
+import { modelLibrary } from '../game/models';
 import { getPreview } from './preview';
 import { charactersTab } from './tabs/characters';
 import { itemsTab } from './tabs/items';
@@ -340,6 +341,26 @@ export class App {
   ) {
     getPreview().stop();
     this.session?.dispose();
+    // Imported models load before the fight so actors can use them right away.
+    const pending = universe.characters.some((c) => c.appearance.model && !modelLibrary.isReady(c.appearance.model));
+    if (pending) {
+      clear(this.root);
+      this.root.append(h('div', { class: 'loading-screen' }, h('div', { class: 'spinner' }), h('p', null, 'Loading 3D models…')));
+      void modelLibrary.preloadUniverse(universe).then((failed) => {
+        if (failed.length) toast(`Couldn't load the 3D model for ${failed.join(', ')}; using the built-in body instead.`, 'error');
+        this.launch(universe, characterId, mission, returnTab);
+      });
+      return;
+    }
+    this.launch(universe, characterId, mission, returnTab);
+  }
+
+  private launch(
+    universe: Universe,
+    characterId: string,
+    mission: Pick<SessionOptions, 'plan' | 'sandboxLocationId' | 'bossOptions' | 'onFinish'>,
+    returnTab: string,
+  ) {
     clear(this.root);
     try {
       this.session = new GameSession({

@@ -14,6 +14,7 @@ import { deleteButton, listDetail, removeById, type EditorContext } from '../con
 import { h, toast } from '../dom';
 import { checkbox, chips, colorInput, field, section, select, slider, textArea, textInput, capitalize } from '../forms';
 import { getPreview } from '../preview';
+import { modelSection } from '../model-editor';
 import { overlay } from '../overlay';
 import { LEGENDS, legendCharacter, type LegendSpec } from '../../core/roster';
 
@@ -57,6 +58,7 @@ export function blankCharacter(): Character {
       emblem: 'star',
       cape: true,
       aura: false,
+      model: null,
     },
     itemIds: [],
     level: 1,
@@ -193,7 +195,7 @@ function characterEditor(ctx: EditorContext, c: Character): HTMLElement {
       checkbox(() => a.aura, (v) => ((a.aura = v), appearanceChanged()), 'Power aura'),
     ),
     !ctx.quick && field('Height', slider(() => a.height, (v) => ((a.height = v), appearanceChanged()), 0.8, 1.3, 0.01, (v) => `${Math.round(v * 183)} cm`)),
-    h('button', { class: 'btn small', onclick: () => ((c.appearance = randomAppearance(rng())), ctx.changed(), ctx.rerender()) }, '🎲 Random costume'),
+    h('button', { class: 'btn small', onclick: () => ((c.appearance = { ...randomAppearance(rng()), model: c.appearance.model }), ctx.changed(), ctx.rerender()) }, '🎲 Random costume'),
   );
 
   const stats = section('Attributes',
@@ -276,7 +278,9 @@ function characterEditor(ctx: EditorContext, c: Character): HTMLElement {
     deleteButton(ctx, 'character', () => removeById(u.characters, c.id)),
   );
 
-  return h('div', { class: 'editor' }, header, appearance, stats, powers, gear, lore, actions);
+  const model = modelSection(ctx, c, appearanceChanged);
+
+  return h('div', { class: 'editor' }, header, appearance, model, stats, powers, gear, lore, actions);
 }
 
 const MOVEMENT_LABELS: Record<MovementKind, string> = {

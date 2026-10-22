@@ -45,6 +45,28 @@ export type HeadStyle = (typeof HEAD_STYLES)[number];
 export const EMBLEMS = ['none', 'star', 'bolt', 'circle', 'diamond', 'triangle'] as const;
 export type Emblem = (typeof EMBLEMS)[number];
 
+/** Animation states an imported model can play. */
+export const MODEL_STATES = ['idle', 'walk', 'run', 'jump', 'fly', 'attack', 'cast', 'hurt', 'death'] as const;
+export type ModelState = (typeof MODEL_STATES)[number];
+
+/** An imported 3D model used instead of the procedural body. */
+export interface ModelRef {
+  /** "builtin:<key>", "asset:<id>" (a file stored in this browser), or an https URL. */
+  src: string;
+  /** Size multiplier applied after the model is fitted to the character's height. */
+  scale: number;
+  /** Turn the model (degrees) if it doesn't face forward. */
+  yaw: number;
+  /** Blend the costume colors into the model's materials. */
+  tint: boolean;
+  /**
+   * Per-state animation overrides. "clip:<name>" picks a clip inside the model;
+   * a source ("asset:<id>" or URL) uses the first clip of another file, such as
+   * a Mixamo animation downloaded without skin. Unset states are auto-detected.
+   */
+  clips: Partial<Record<ModelState, string>>;
+}
+
 export interface Appearance {
   primary: string;
   secondary: string;
@@ -56,6 +78,8 @@ export interface Appearance {
   emblem: Emblem;
   cape: boolean;
   aura: boolean;
+  /** Imported 3D model; null uses the procedural body built from the options above. */
+  model: ModelRef | null;
 }
 
 export interface Character {
