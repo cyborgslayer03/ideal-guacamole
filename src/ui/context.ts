@@ -26,6 +26,8 @@ export interface EditorContext {
   playStory(storyId: string, chapter: number, characterId: string): void;
   playMission(mission: Mission, heroId: string, allyId: string | null): void;
   exportBundle(bundle: Bundle | null): void;
+  /** Share to the Multiverse Hub (signs in first if needed). */
+  publishBundle(bundle: Bundle | null): void;
   openTab(tab: string): void;
 }
 

@@ -65,9 +65,32 @@ Free play in any location. Spawn troops or waves at any level, summon any charac
 | Camera | Right-drag, arrow keys, wheel | Drag |
 | Pause | Esc / P | ❚❚ |
 
+## Multiverse Hub (online)
+
+The hub is where players publish and download universes, characters, stories and items.
+- **Browse:** filter by type, search names, heroes, tags and creators, and sort by newest, top rated or most downloaded.
+- **Download:** a universe arrives as a new universe. A character, story or item can go into any of your universes, or into a new one.
+- **Publish:** use the **Publish** button next to any Export button. A free account (handle and password) is needed to publish or like. Browsing and downloading need none.
+- **Manage:** republishing to one of your listings bumps its version. You can delete your own listings, and listings that several players report are hidden pending review.
+
+### Running it
+```bash
+npm run hub        # API on http://localhost:8787 (data in ./hub-data)
+npm run dev        # game on :5173; /api is proxied to the hub
+npm start          # production: build the game and serve game + API on one port
+```
+
+Environment variables for `server/main.ts`: `PORT`, `HUB_DATA_DIR`, `STATIC_DIR` (serve the built game), `CORS_ORIGIN` (allow a game hosted elsewhere), and `TRUST_PROXY=1` (behind a reverse proxy). To point a game at a hub on another host, set **Settings → Hub server** on the home screen, e.g. `https://hub.example.com/api`.
+
+### How it's built
+- `server/` is plain `node:http` with no framework or database. Users, sessions and listings live in a JSON file, and uploads are stored as individual bundle files. Everything goes through the `HubStore` interface, so a database such as Postgres can replace it later.
+- Every upload is validated with the same `parseBundle` / `normalizeUniverse` code the game uses for imports. Downloads are validated again on the client.
+- Passwords are hashed with scrypt, and session tokens are random and stored only as SHA-256 hashes. Request bodies are capped at 2 MB, and requests are rate-limited per IP, with tighter limits on writes.
+- `src/online/protocol.ts` is the API contract shared by `src/online/client.ts` and the server.
+
 ## Sharing
 
-Universes, characters, items and stories export as `.json` bundles. A story bundle carries every character, location, item and faction it uses. Imports are validated and sanitized (`src/core/validate.ts`) and get fresh ids, so content from other players can never collide with or corrupt yours. This bundle format is what the future online hub will upload and download.
+Universes, characters, items and stories export as `.json` bundles. A story bundle carries every character, location, item and faction it uses. Imports are validated and sanitized (`src/core/validate.ts`) and get fresh ids, so content from other players can never collide with or corrupt yours. The Multiverse Hub uploads and downloads this same bundle format.
 
 ## Project layout
 
@@ -75,7 +98,9 @@ Universes, characters, items and stories export as `.json` bundles. A story bund
 src/core/   Pure game data and logic: types, rules/balance, generator, validation, storage, sharing,
             campaign (War Table, factions, relationships), mission plans
 src/game/   Three.js runtime: models, arenas, combat, AI, effects, HUD, input, session loop
-src/ui/     Creator UI: home/library, editor shell, tabs, forms, 3D preview
+src/online/ Multiverse Hub API contract and browser client
+src/ui/     Creator UI: home/library, editor shell, tabs, forms, 3D preview, hub screens
+server/     Multiverse Hub server (node:http, file storage)
 tests/      Vitest: core logic, campaign rules and fuzzing, and a headless combat simulation
 ```
 
@@ -83,7 +108,7 @@ tests/      Vitest: core logic, campaign rules and fuzzing, and a headless comba
 
 ## Roadmap
 
-- **Multiverse Hub (online):** accounts, publish/browse/download universes, characters, stories and items, with ratings and remixing. The `UniverseLibrary` / `KeyValueStore` seam and the bundle format are already in place for it.
+- **Hub, next steps:** a hosted deployment with a real database, comments, follows and creator profiles, remix credits, moderator tools, and cloud sync of your own library.
 - Cutscene camera moves, voiced barks, and companion banter based on relationships.
 - More enemy archetypes, elite modifiers, co-op heroes and team-up attacks.
 - Imported 3D models/animations (glTF) alongside the procedural ones.

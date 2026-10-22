@@ -11,6 +11,7 @@ import { nextChapterIndex, planChapter, type MissionPlan, type MissionResult } f
 import { GameSession, type SessionOptions } from '../game/session';
 import type { EditorContext } from './context';
 import { checkbox } from './forms';
+import { openPublishDialog, showHub } from './hub';
 import { clear, downloadText, h, pickFile, slug, toast } from './dom';
 import { getPreview } from './preview';
 import { charactersTab } from './tabs/characters';
@@ -138,16 +139,48 @@ export class App {
                 ),
               ),
         ),
+        h('section', { class: 'library hub-cta' },
+          h('div', null,
+            h('h2', { class: 'panel-title' }, 'Multiverse Hub'),
+            h('p', { class: 'muted' }, 'Browse universes, heroes, villains, stories, and gear made by other players, and share your own.'),
+          ),
+          h('button', { class: 'btn primary big', onclick: () => this.showHub() }, 'Enter the Hub'),
+        ),
         h('section', { class: 'library' },
           h('h2', { class: 'panel-title' }, 'Settings'),
           checkbox(() => this.settings.bloom, (v) => ((this.settings.bloom = v), this.persistSettings()), 'Glow effects (turn off on slower devices)'),
-        ),
-        h('section', { class: 'library coming-soon' },
-          h('h2', { class: 'panel-title' }, 'Multiverse Hub'),
-          h('p', { class: 'muted' }, 'Coming soon: browse and download universes, characters, stories, and items created by other players. Until then, share exported bundles directly.'),
+          h('label', { class: 'field hub-url' },
+            h('span', { class: 'field-label' }, 'Hub server'),
+            h('input', {
+              id: 'hub-url',
+              type: 'text',
+              value: this.settings.hubUrl,
+              placeholder: 'This site (leave blank), or e.g. https://hub.example.com/api',
+              onchange: (e: Event) => {
+                this.settings.hubUrl = (e.target as HTMLInputElement).value.trim();
+                // A session belongs to one server.
+                this.settings.hubToken = '';
+                this.settings.hubHandle = '';
+                this.persistSettings();
+                toast('Hub server updated');
+              },
+            }),
+          ),
         ),
       ),
     );
+  }
+
+  showHub() {
+    getPreview().stop();
+    showHub({
+      root: this.root,
+      kv: this.kv,
+      library: this.library,
+      settings: this.settings,
+      goHome: () => this.showHome(),
+      openUniverse: (id) => this.showEditor(id),
+    });
   }
 
   // --- Editor --------------------------------------------------------------
@@ -241,6 +274,10 @@ export class App {
         }, 'play');
       },
       exportBundle: (b) => this.exportBundle(b),
+      publishBundle: (b) => {
+        flush();
+        if (b) void openPublishDialog({ kv: this.kv, settings: this.settings }, b);
+      },
       openTab: (id) => {
         tab = id;
         render();

@@ -45,6 +45,7 @@ function itemEditor(ctx: EditorContext, item: Item): HTMLElement {
     ),
     holders.length > 0 && h('p', { class: 'muted' }, `Equipped by: ${holders.map((c) => c.alias).join(', ')}`),
     h('div', { class: 'row end' },
+      h('button', { class: 'btn', onclick: () => ctx.publishBundle(bundleItem(u, item.id)) }, 'Publish'),
       h('button', { class: 'btn', onclick: () => ctx.exportBundle(bundleItem(u, item.id)) }, 'Export'),
       deleteButton(ctx, 'item', () => removeById(u.items, item.id)),
     ),

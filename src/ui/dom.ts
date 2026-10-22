@@ -38,6 +38,12 @@ function append(el: Node, children: Child[]) {
   }
 }
 
+/** Like replaceChildren, but accepts the same optional children as h(). */
+export function setChildren(el: Element, ...children: Child[]) {
+  clear(el);
+  append(el, children);
+}
+
 export function clear(el: Element) {
   while (el.firstChild) el.removeChild(el.firstChild);
 }

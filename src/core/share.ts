@@ -1,6 +1,6 @@
 // Export/import of shareable bundles. Every bundle's payload is a (partial)
 // universe, so a single validator handles all content types. This is the file
-// format the future online hub will upload and download.
+// format the Multiverse Hub uploads and downloads.
 
 import { emptyUniverse } from './generator';
 import { newId } from './id';

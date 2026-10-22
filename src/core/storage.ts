@@ -111,10 +111,15 @@ export interface Settings {
   detail: 'quick' | 'full';
   bloom: boolean;
   author: string;
+  /** Multiverse Hub API root; empty means this site's own /api. */
+  hubUrl: string;
+  /** Signed-in hub session. */
+  hubToken: string;
+  hubHandle: string;
 }
 
 const SETTINGS_KEY = 'of:settings';
-const DEFAULT_SETTINGS: Settings = { detail: 'quick', bloom: true, author: '' };
+const DEFAULT_SETTINGS: Settings = { detail: 'quick', bloom: true, author: '', hubUrl: '', hubToken: '', hubHandle: '' };
 
 export function loadSettings(kv: KeyValueStore): Settings {
   try {

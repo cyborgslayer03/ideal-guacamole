@@ -57,6 +57,7 @@ function storyEditor(ctx: EditorContext, s: Story): HTMLElement {
     h('div', { class: 'row end' },
       protagonist && s.chapters.length > 0 &&
         h('button', { class: 'btn primary', onclick: () => ctx.playStory(s.id, 0, protagonist.id) }, '▶ Play story'),
+      h('button', { class: 'btn', onclick: () => ctx.publishBundle(bundleStory(u, s.id)) }, 'Publish'),
       h('button', { class: 'btn', onclick: () => ctx.exportBundle(bundleStory(u, s.id)) }, 'Export'),
       deleteButton(ctx, 'story', () => removeById(u.stories, s.id)),
     ),

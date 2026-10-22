@@ -48,8 +48,9 @@ export function overviewTab(ctx: EditorContext): HTMLElement {
       ),
     ),
     section('Share',
-      h('p', { class: 'muted' }, 'Export bundles to share with friends. Import characters, items, stories, or whole universes made by others.'),
+      h('p', { class: 'muted' }, 'Publish this universe to the Multiverse Hub, or export a file to share directly. Characters, stories, and items each have their own Publish button too.'),
       h('div', { class: 'row wrap' },
+        h('button', { class: 'btn primary', onclick: () => ctx.publishBundle(bundleUniverse(u)) }, 'Publish to Hub'),
         h('button', { class: 'btn', onclick: () => ctx.exportBundle(bundleUniverse(u)) }, 'Export universe'),
         h('button', {
           class: 'btn',
