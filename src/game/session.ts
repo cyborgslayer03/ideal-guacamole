@@ -16,7 +16,7 @@ import {
 } from '../core/rules';
 import type { Appearance, Character, Element, Location, Universe, UniverseRules } from '../core/types';
 import { AmbientDirector, type AmbientHost } from './ambient';
-import { h } from '../ui/dom';
+import { h, saveFile } from '../ui/dom';
 import { updateAlly, updateEnemy, type SquadContext, type SquadOrder } from './ai';
 import { ARENA_RADIUS, aimPoint, buildArena, type AimResult, type Arena } from './arena';
 import { Actor, Combat } from './combat';
@@ -1487,12 +1487,9 @@ export class GameSession {
       ctx.fillStyle = '#000';
       ctx.fillText(ph.text.toUpperCase(), x + size * 0.7, y + size * 1.3);
     }
-    const a = document.createElement('a');
-    a.href = out.toDataURL('image/png');
-    a.download = `omniverse-${Date.now()}.png`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
+    out.toBlob((blob) => {
+      if (blob) void saveFile(`omniverse-${Date.now()}.png`, blob);
+    }, 'image/png');
   }
 
   private controlPlayer(s: Stage, dt: number) {

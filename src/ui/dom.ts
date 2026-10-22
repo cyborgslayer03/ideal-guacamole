@@ -58,13 +58,42 @@ export function toast(message: string, kind: 'info' | 'error' = 'info') {
   }, 2600);
 }
 
-export function downloadText(filename: string, text: string) {
-  const url = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
+interface DownloadsApi {
+  save(req: { filename: string; data: Blob | string }): Promise<{ status: string }>;
+}
+
+let downloadsApi: Promise<DownloadsApi | null> | null = null;
+
+/** The host's save API when the page runs inside the Claude artifact viewer (which blocks plain download links). */
+function hostDownloads(): Promise<DownloadsApi | null> {
+  const host = (window as unknown as { claude?: { use?: (name: string) => Promise<unknown> } }).claude;
+  if (!host?.use) return Promise.resolve(null);
+  downloadsApi ??= host.use('downloads').then((d) => (d as DownloadsApi | null) ?? null).catch(() => null);
+  return downloadsApi;
+}
+
+/** Offers a file to the user: through the host's save prompt when there is one, else a normal download. */
+export async function saveFile(filename: string, data: Blob | string, type = 'application/octet-stream'): Promise<void> {
+  const api = await hostDownloads();
+  if (api) {
+    try {
+      await api.save({ filename, data });
+    } catch (e) {
+      const code = (e as { code?: string }).code;
+      if (code !== 'declined') toast(code === 'rate_limited' ? 'A save is already waiting for you.' : 'Saving files is not available here.', 'error');
+    }
+    return;
+  }
+  const url = URL.createObjectURL(typeof data === 'string' ? new Blob([data], { type }) : data);
   const a = h('a', { href: url, download: filename });
   document.body.appendChild(a);
   a.click();
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+export function downloadText(filename: string, text: string) {
+  void saveFile(filename, text, 'application/json');
 }
 
 export function pickFile(accept = '.json'): Promise<string | null> {
