@@ -19,6 +19,8 @@ function blankChapter(ctx: EditorContext): Chapter {
     enemyLevel: 1,
     outro: [],
     rewardItemId: null,
+    requires: null,
+    choice: null,
   };
 }
 
@@ -54,7 +56,7 @@ function storyEditor(ctx: EditorContext, s: Story): HTMLElement {
     ),
     h('div', { class: 'row end' },
       protagonist && s.chapters.length > 0 &&
-        h('button', { class: 'btn primary', onclick: () => ctx.play({ type: 'story', storyId: s.id, chapter: 0 }, protagonist.id) }, '▶ Play story'),
+        h('button', { class: 'btn primary', onclick: () => ctx.playStory(s.id, 0, protagonist.id) }, '▶ Play story'),
       h('button', { class: 'btn', onclick: () => ctx.exportBundle(bundleStory(u, s.id)) }, 'Export'),
       deleteButton(ctx, 'story', () => removeById(u.stories, s.id)),
     ),
@@ -111,8 +113,65 @@ function chapterEditor(ctx: EditorContext, s: Story, ch: Chapter, index: number)
       field('Reward', select(rewardOptions, () => ch.rewardItemId ?? '', (v) => ((ch.rewardItemId = v || null), ctx.changed()))),
     ),
     ctx.quick
-      ? h('p', { class: 'muted' }, `${ch.intro.length + ch.outro.length} dialogue lines · switch to Full detail to write dialogue`)
-      : [dialogueEditor(ctx, 'Intro dialogue', ch.intro), dialogueEditor(ctx, 'Outro dialogue', ch.outro)],
+      ? h('p', { class: 'muted' }, `${ch.intro.length + ch.outro.length} dialogue lines${ch.choice ? ' · has a choice' : ''}${ch.requires ? ' · conditional' : ''} · switch to Full detail to write dialogue and branches`)
+      : [dialogueEditor(ctx, 'Intro dialogue', ch.intro), dialogueEditor(ctx, 'Outro dialogue', ch.outro), branchEditor(ctx, ch)],
+  );
+}
+
+/** Conditions and choices: how a story adapts to the player's decisions. */
+function branchEditor(ctx: EditorContext, ch: Chapter): HTMLElement {
+  const characterOptions = [{ value: '', label: '— Nobody —' }, ...ctx.universe.characters.map((c) => ({ value: c.id, label: c.alias }))];
+  const flagInput = (get: () => string, set: (v: string) => void, placeholder: string) =>
+    h('input', { type: 'text', value: get(), placeholder, maxLength: 64, oninput: (e: Event) => (set((e.target as HTMLInputElement).value.replace(/[^\w.:-]/g, '')), ctx.changed()) });
+
+  const requires = ch.requires
+    ? h('div', { class: 'condition-row' },
+        field('Only plays if flag', flagInput(() => ch.requires!.flag, (v) => (ch.requires!.flag = v), 'e.g. approach')),
+        field('equals', flagInput(() => ch.requires!.value, (v) => (ch.requires!.value = v), 'e.g. pursue')),
+      )
+    : null;
+
+  const choice = ch.choice;
+  const choiceEditor = choice && h('div', null,
+    field('Prompt', textInput(() => choice.prompt, (v) => ((choice.prompt = v), ctx.changed()), 'What does the player decide?', 300)),
+    field('Flag to set', flagInput(() => choice.flag, (v) => (choice.flag = v), 'e.g. approach'), 'Later chapters can require this flag.'),
+    ...choice.options.map((o, i) =>
+      h('div', { class: 'choice-option' },
+        field('Option', textInput(() => o.label, (v) => ((o.label = v), ctx.changed()), 'Chase the villain')),
+        field('Sets value', flagInput(() => o.value, (v) => (o.value = v), 'pursue')),
+        field('Affects', select(characterOptions, () => o.relationshipId ?? '', (v) => ((o.relationshipId = v || null), ctx.changed()))),
+        field('By', slider(() => o.relationshipDelta, (v) => ((o.relationshipDelta = v), ctx.changed()), -50, 50, 5)),
+        h('button', { class: 'icon-btn', title: 'Remove option', onclick: () => (choice.options.splice(i, 1), choice.options.length || (ch.choice = null), ctx.changed(), ctx.rerender()) }, '✕'),
+      ),
+    ),
+    choice.options.length < 4 && h('button', { class: 'btn small', onclick: () => (choice.options.push({ label: 'New option', value: `option${choice.options.length + 1}`, relationshipId: null, relationshipDelta: 0 }), ctx.changed(), ctx.rerender()) }, '+ Option'),
+  );
+
+  return h('div', { class: 'dialogue-edit' },
+    h('div', { class: 'field-label' }, 'Branching'),
+    h('div', { class: 'row' },
+      h('button', {
+        class: `chip${ch.requires ? ' active' : ''}`,
+        onclick: () => ((ch.requires = ch.requires ? null : { flag: '', value: '' }), ctx.changed(), ctx.rerender()),
+      }, ch.requires ? '✓ Conditional chapter' : '+ Make conditional'),
+      h('button', {
+        class: `chip${ch.choice ? ' active' : ''}`,
+        onclick: () => {
+          ch.choice = ch.choice ? null : {
+            prompt: 'What do you do?',
+            flag: `choice${Math.floor(Math.random() * 1000)}`,
+            options: [
+              { label: 'Option A', value: 'a', relationshipId: null, relationshipDelta: 0 },
+              { label: 'Option B', value: 'b', relationshipId: null, relationshipDelta: 0 },
+            ],
+          };
+          ctx.changed();
+          ctx.rerender();
+        },
+      }, ch.choice ? '✓ Ends with a choice' : '+ Add a choice'),
+    ),
+    requires,
+    choiceEditor,
   );
 }
 

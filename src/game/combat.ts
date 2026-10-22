@@ -12,7 +12,7 @@ import type { Effects } from './effects';
 import { CharacterModel, idleAnim, type AnimState } from './model';
 
 export type Team = 'player' | 'enemy';
-export type Archetype = 'hero' | 'grunt' | 'gunner' | 'brute' | 'boss';
+export type Archetype = 'hero' | 'ally' | 'grunt' | 'gunner' | 'brute' | 'boss';
 
 export interface SkillSlot {
   power: Power;
@@ -73,6 +73,8 @@ export class Actor {
   ultimate = 0;
   /** Seconds since this actor last took damage; drives HUD and AI. */
   sinceHit = 99;
+  /** Shown before the name on boss bars, e.g. "Nemesis". */
+  title = '';
   /** Free-form per-archetype AI memory. */
   ai: Record<string, number> = {};
   shieldMesh: THREE.Mesh | null = null;
@@ -94,7 +96,7 @@ export class Actor {
     const sizeBonus = archetype === 'brute' ? 1.4 : archetype === 'boss' ? 1.25 : 1;
     this.model.root.scale.setScalar(sizeBonus);
     this.radius = 0.55 * appearance.height * sizeBonus;
-    this.speed = moveSpeed(stats) * (archetype === 'brute' ? 0.6 : archetype === 'hero' ? 1 : 0.7);
+    this.speed = moveSpeed(stats) * (archetype === 'brute' ? 0.6 : archetype === 'hero' || archetype === 'ally' ? 1 : 0.7);
     this.canFly = powers.some((p) => p.kind === 'flight');
     this.skills = powers
       .filter((p) => p.kind !== 'flight')
@@ -263,7 +265,7 @@ export class Combat {
     a.comboWindow = ATTACK_TIME + COMBO_WINDOW;
 
     const finisher = step === COMBO.length - 1;
-    const raw = basicDamage(a.stats, a.level) * COMBO[step] * (a.archetype === 'hero' ? 1 : 0.5);
+    const raw = basicDamage(a.stats, a.level) * COMBO[step] * (a.archetype === 'hero' ? 1 : a.archetype === 'ally' ? 0.7 : 0.5);
     // Resolve the hit slightly into the swing.
     this.schedule(ATTACK_TIME * 0.4, () => {
       if (!a.alive) return;

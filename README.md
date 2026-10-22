@@ -28,6 +28,26 @@ npm run build      # typecheck + production build into dist/
 - Grunts, gunners and brutes (with telegraphed slams), plus bosses built from your own characters that use their real powers.
 - XP and leveling, item rewards that auto-equip, damage numbers, combo counter, boss bars, and bloom-lit neon arenas generated from each location's biome.
 
+### War Table (campaign)
+Every universe has a living campaign. The mission board is generated from the current world state, so it changes as your choices reshape the world:
+
+| Mission | What happens |
+| --- | --- |
+| **Story** | Your authored chapters. Bosses who are gone are replaced by whoever holds their position now. |
+| **Patrol** | Roam a location and respond to beacons: enemy squads, civilians to protect, elite lieutenants. Nemeses may ambush you. |
+| **Raid** | A multi-phase stronghold assault: waves, then the lieutenants together, then the faction leader. |
+| **Hunt** | Track down a faction leader, a lieutenant, or a hero who went rogue. |
+| **Vendetta** | A nemesis comes for you personally. |
+| **Ally** | A friend is pinned down. Help them and they may become a companion. |
+| **Defense** | A faction at full strength attacks. Ignoring it lets them grow. |
+
+- **Boss verdicts:** after a boss falls, you choose **Arrest** (they may escape later), **Spare** (earns respect), **Recruit** (they join you if they don't hate you) or **Finish** (permanent, and their faction swears revenge).
+- **Rotating bosses:** when a leader falls, a lieutenant rises to replace them. If the faction is weak, an outsider may seize the power vacuum, and if nobody is left, a brand-new villain is generated. Escaped prisoners can reclaim their throne, and ambitious lieutenants stage coups.
+- **Ally / nemesis system:** every character has a relationship score, memories ("was arrested by Nova"), and a win/loss record against you. Bosses who beat you level up and become stronger **nemeses** with personal dialogue. Friends and recruits become **companions** who fight beside you with their own powers. Heroes who disapprove of your methods can **go rogue**.
+- **Branching stories:** chapters can end with a choice that sets a flag, and later chapters can require a flag. Instant universes include a branching story to show how it works.
+- **Deterministic:** the world runs on the campaign seed, so the same choices always lead to the same outcomes.
+- **Omni controls** (in Full detail): override faction power and relationship scores, pass time, or reset the campaign.
+
 ### Omni Sandbox
 Free play in any location. Spawn troops or waves at any level, summon any character as a boss, and bend time, gravity and power on the fly.
 
@@ -52,10 +72,11 @@ Universes, characters, items and stories export as `.json` bundles. A story bund
 ## Project layout
 
 ```
-src/core/   Pure game data and logic: types, rules/balance, generator, validation, storage, sharing
+src/core/   Pure game data and logic: types, rules/balance, generator, validation, storage, sharing,
+            campaign (War Table, factions, relationships), mission plans
 src/game/   Three.js runtime: models, arenas, combat, AI, effects, HUD, input, session loop
 src/ui/     Creator UI: home/library, editor shell, tabs, forms, 3D preview
-tests/      Vitest: core logic plus a headless combat simulation
+tests/      Vitest: core logic, campaign rules and fuzzing, and a headless combat simulation
 ```
 
 `src/core` has no DOM or WebGL dependencies, so it can be reused by a backend later.
@@ -63,7 +84,7 @@ tests/      Vitest: core logic plus a headless combat simulation
 ## Roadmap
 
 - **Multiverse Hub (online):** accounts, publish/browse/download universes, characters, stories and items, with ratings and remixing. The `UniverseLibrary` / `KeyValueStore` seam and the bundle format are already in place for it.
-- Story progress tracking, branching dialogue choices, and cutscene camera moves.
+- Cutscene camera moves, voiced barks, and companion banter based on relationships.
 - More enemy archetypes, elite modifiers, co-op heroes and team-up attacks.
 - Imported 3D models/animations (glTF) alongside the procedural ones.
 - Packaging as an installable mobile/desktop app (PWA or Capacitor/Tauri).

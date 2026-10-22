@@ -101,6 +101,38 @@ export function updateEnemy(e: Actor, combat: Combat, dt: number) {
     }
 
     case 'hero':
+    case 'ally':
       break;
   }
+}
+
+/** Companion brain: fight nearby enemies with powers and melee, otherwise stay close to the leader. */
+export function updateAlly(a: Actor, combat: Combat, dt: number, leader: Actor) {
+  a.moveIntent.set(0, 0, 0);
+  if (!a.alive) return;
+  const target = combat.findTarget(a, 22);
+  if (!target) {
+    if (a.pos.distanceTo(leader.pos) > 4) steerToward(a, leader.pos);
+    return;
+  }
+  const gap = a.pos.distanceTo(target.pos) - a.radius - target.radius;
+  if (!a.busy) {
+    const ready = a.skills.map((_, i) => i).filter((i) => combat.canCast(a, i));
+    if (ready.length && cooldown(a, 'power', dt) <= 0) {
+      const slot = ready[Math.floor(Math.random() * ready.length)];
+      const kind = a.skills[slot].power.kind;
+      const useful = kind === 'heal' ? a.hp < a.maxHp * 0.6 : kind === 'nova' || kind === 'dash' ? gap < 6 : kind !== 'shield' || a.sinceHit < 1;
+      if (useful && combat.castPower(a, slot)) {
+        a.ai.power = 2.5 + Math.random() * 2;
+        return;
+      }
+    }
+    if (gap < 1.4 && cooldown(a, 'attack', dt) <= 0) {
+      a.faceToward(target.pos);
+      combat.basicAttack(a);
+      a.ai.attack = 0.35;
+      return;
+    }
+  }
+  if (gap > 1.2) steerToward(a, target.pos);
 }

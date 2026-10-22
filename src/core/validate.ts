@@ -7,7 +7,7 @@ import { newId } from './id';
 import {
   BIOMES, BUILDS, ELEMENTS, EMBLEMS, HEAD_STYLES, ITEM_SLOTS, POWER_KINDS, RARITIES, ROLES,
   SCHEMA_VERSION, STAT_KEYS,
-  type Appearance, type Chapter, type Character, type DialogueLine, type Faction, type Item,
+  type Appearance, type Chapter, type ChapterCondition, type ChoiceOption, type StoryChoice, type Character, type DialogueLine, type Faction, type Item,
   type Location, type Objective, type Power, type Stats, type Story, type Universe,
 } from './types';
 
@@ -144,6 +144,8 @@ export function normalizeFaction(raw: unknown): Faction {
     color: color(o.color, '#888888'),
     alignment: oneOf(o.alignment, ROLES, 'neutral'),
     description: str(o.description, ''),
+    // Checked against real character ids once characters are normalized.
+    leaderId: typeof o.leaderId === 'string' ? o.leaderId : null,
   };
 }
 
@@ -152,6 +154,33 @@ function normalizeDialogue(raw: unknown): DialogueLine[] {
     const o = obj(line);
     return { speaker: str(o.speaker, '', MAX_NAME), text: str(o.text, '', 600) };
   });
+}
+
+const FLAG_RE = /^[\w.:-]{1,64}$/;
+
+function flagName(v: unknown): string {
+  return typeof v === 'string' && FLAG_RE.test(v) ? v : '';
+}
+
+function normalizeCondition(raw: unknown): ChapterCondition | null {
+  if (!isObj(raw)) return null;
+  const flag = flagName(raw.flag);
+  return flag ? { flag, value: str(raw.value, '', 64) } : null;
+}
+
+function normalizeChoice(raw: unknown, characterIds: Set<string>): StoryChoice | null {
+  if (!isObj(raw)) return null;
+  const flag = flagName(raw.flag);
+  const options: ChoiceOption[] = list(raw.options).slice(0, 4).map((x) => {
+    const o = obj(x);
+    return {
+      label: str(o.label, 'Option', MAX_NAME),
+      value: str(o.value, '', 64),
+      relationshipId: nullableRef(o.relationshipId, characterIds),
+      relationshipDelta: int(o.relationshipDelta, 0, -100, 100),
+    };
+  });
+  return flag && options.length ? { prompt: str(raw.prompt, '', 300), flag, options } : null;
 }
 
 function normalizeObjective(raw: unknown, characterIds: Set<string>): Objective {
@@ -182,6 +211,8 @@ function normalizeChapter(raw: unknown, refs: Refs): Chapter {
     enemyLevel: int(o.enemyLevel, 1, 1, 60),
     outro: normalizeDialogue(o.outro),
     rewardItemId: nullableRef(o.rewardItemId, refs.items),
+    requires: normalizeCondition(o.requires),
+    choice: normalizeChoice(o.choice, refs.characters),
   };
 }
 
@@ -215,6 +246,9 @@ export function normalizeUniverse(raw: unknown): Universe {
   const factionIds = new Set(factions.map((f) => f.id));
   const itemIds = new Set(items.map((i) => i.id));
   const characters = dedupeIds(list(o.characters).map((c) => normalizeCharacter(c, factionIds, itemIds)), 'chr');
+  for (const f of factions) {
+    if (!characters.some((c) => c.id === f.leaderId && c.factionId === f.id)) f.leaderId = null;
+  }
   const refs: Refs = {
     characters: new Set(characters.map((c) => c.id)),
     locations: new Set(locations.map((l) => l.id)),

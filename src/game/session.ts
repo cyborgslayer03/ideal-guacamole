@@ -1,5 +1,6 @@
-// Story mode / sandbox runtime: owns the renderer, camera, game loop, and the
-// flow of chapters (dialogue -> combat objective -> rewards).
+// Game runtime: owns the renderer, camera, and game loop, and executes
+// mission plans phase by phase (waves, survival, boss fights, patrols) or
+// runs the free-play Omni Sandbox.
 
 import * as THREE from 'three';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
@@ -7,27 +8,30 @@ import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { randomLocation } from '../core/generator';
+import type { BossOption, BossOutcome, MissionPlan, MissionResult, PatrolEvent, Phase } from '../core/missions';
 import { Rng } from '../core/rng';
 import { RARITY_COLORS, effectiveStats, grantXp, maxHealth, minionHealth, minionStats, xpReward } from '../core/rules';
-import type { Appearance, Chapter, Character, Location, Story, Universe } from '../core/types';
+import type { Appearance, Character, Location, Universe } from '../core/types';
 import { h } from '../ui/dom';
-import { updateEnemy } from './ai';
+import { updateAlly, updateEnemy } from './ai';
 import { ARENA_RADIUS, buildArena, type Arena } from './arena';
 import { Actor, Combat } from './combat';
 import { Effects } from './effects';
 import { Hud } from './hud';
 import { Input } from './input';
 
-export type SessionMode =
-  | { type: 'story'; storyId: string; chapter: number }
-  | { type: 'sandbox'; locationId: string | null };
-
 export interface SessionOptions {
   container: HTMLElement;
   universe: Universe;
   characterId: string;
-  mode: SessionMode;
+  /** Mission to run, or null for the Omni Sandbox. */
+  plan: MissionPlan | null;
+  sandboxLocationId?: string | null;
   bloom: boolean;
+  /** Labels for the fate of a defeated boss (campaign only). */
+  bossOptions?: (bossId: string) => BossOption[];
+  /** Called when a mission ends; return a plan to continue straight into it. */
+  onFinish?: (result: MissionResult) => MissionPlan | null;
   /** Called whenever progress (XP, levels, rewards) should be persisted. */
   onSave: () => void;
   onExit: () => void;
@@ -40,18 +44,33 @@ interface Stage {
   combat: Combat;
   fx: Effects;
   player: Actor;
+  ally: Actor | null;
   hud: Hud;
   location: Location;
 }
 
-interface Objective {
-  chapter: Chapter;
-  spawned: number;
+interface Beacon {
+  pos: THREE.Vector3;
+  event: PatrolEvent;
+  state: 'idle' | 'active' | 'done';
+  group: THREE.Group;
+  actors: Set<Actor>;
+  timer: number;
+}
+
+interface Run {
+  plan: MissionPlan;
+  phase: number;
   killed: number;
+  spawned: number;
   elapsed: number;
-  boss: Actor | null;
-  done: boolean;
   spawnTimer: number;
+  bosses: Actor[];
+  defeated: string[];
+  beacons: Beacon[];
+  ambush: 'none' | 'pending' | 'active' | 'done';
+  transitioning: boolean;
+  done: boolean;
 }
 
 export class GameSession {
@@ -62,7 +81,7 @@ export class GameSession {
   private readonly input: Input;
   private readonly root: HTMLElement;
   private stage: Stage | null = null;
-  private objective: Objective | null = null;
+  private run: Run | null = null;
   private frame = 0;
   private last = performance.now();
   private time = 0;
@@ -91,7 +110,7 @@ export class GameSession {
     this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.shadowMap.enabled = true;
-    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    this.renderer.shadowMap.type = THREE.PCFShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.1;
     this.root.appendChild(this.renderer.domElement);
@@ -109,8 +128,8 @@ export class GameSession {
     this.loop = this.loop.bind(this);
     this.frame = requestAnimationFrame(this.loop);
 
-    if (opts.mode.type === 'story') void this.runChapter(opts.mode.storyId, opts.mode.chapter);
-    else this.startSandbox(opts.mode.locationId);
+    if (opts.plan) void this.runPlan(opts.plan);
+    else this.startSandbox(opts.sandboxLocationId ?? null);
   }
 
   // --- Setup ---------------------------------------------------------------
@@ -129,7 +148,7 @@ export class GameSession {
     return u.locations.find((l) => l.id === id) ?? u.locations[0] ?? randomLocation(new Rng(u.seed), 'metropolis');
   }
 
-  private buildStage(location: Location) {
+  private buildStage(location: Location, allyId: string | null) {
     this.teardownStage();
     const u = this.opts.universe;
     const sky = new THREE.Color(location.skyColor);
@@ -144,12 +163,19 @@ export class GameSession {
     combat.gravityScale = u.rules.gravity;
 
     const c = this.character;
-    const stats = effectiveStats(c, u.items);
-    const player = new Actor(c.alias, 'player', 'hero', stats, c.level, c.appearance, c.powers, undefined, c);
-    player.pos.set(0, 0, 0);
+    const player = new Actor(c.alias, 'player', 'hero', effectiveStats(c, u.items), c.level, c.appearance, c.powers, undefined, c);
     combat.add(player);
 
+    let ally: Actor | null = null;
+    const allyChar = allyId ? u.characters.find((x) => x.id === allyId) : undefined;
+    if (allyChar) {
+      ally = new Actor(allyChar.alias, 'player', 'ally', effectiveStats(allyChar, u.items), allyChar.level, allyChar.appearance, allyChar.powers, undefined, allyChar);
+      ally.pos.set(2.5, 0, 2);
+      combat.add(ally);
+    }
+
     const hud = new Hud(player, this.input, () => this.togglePause());
+    hud.setAlly(ally);
     this.root.appendChild(hud.root);
 
     combat.onDamage = (e) => {
@@ -163,7 +189,7 @@ export class GameSession {
     };
     combat.onKill = (target) => this.onKill(target);
 
-    this.stage = { arena, combat, fx, player, hud, location };
+    this.stage = { arena, combat, fx, player, ally, hud, location };
     this.camYaw = Math.PI;
     this.camTarget.copy(player.center);
   }
@@ -171,13 +197,13 @@ export class GameSession {
   private teardownStage() {
     if (!this.stage) return;
     const s = this.stage;
+    for (const b of this.run?.beacons ?? []) if (b.state !== 'done') this.retireBeacon(b, false);
     s.combat.clear();
     s.fx.clear();
     this.scene.remove(s.arena.group);
     s.arena.dispose();
     s.hud.root.remove();
     this.stage = null;
-    this.objective = null;
   }
 
   // --- Spawning ------------------------------------------------------------
@@ -186,9 +212,9 @@ export class GameSession {
     return this.opts.universe.factions.find((f) => f.id === factionId)?.color ?? '#c02838';
   }
 
-  private spawnMinion(type: Minion, level: number, factionId: string | null) {
+  private spawnMinion(type: Minion, level: number, factionId: string | null, around?: THREE.Vector3): Actor | null {
     const s = this.stage;
-    if (!s) return;
+    if (!s) return null;
     const color = this.factionColor(factionId);
     const appearance: Appearance = {
       primary: color,
@@ -205,23 +231,27 @@ export class GameSession {
     const name = type === 'brute' ? 'Brute' : type === 'gunner' ? 'Gunner' : 'Trooper';
     const e = new Actor(name, 'enemy', type, stats, level, appearance, [], minionHealth(stats, level, type));
     const a = Math.random() * Math.PI * 2;
-    const d = 18 + Math.random() * 12;
-    e.pos.set(s.player.pos.x + Math.cos(a) * d, 0, s.player.pos.z + Math.sin(a) * d);
-    const r = Math.hypot(e.pos.x, e.pos.z);
-    if (r > ARENA_RADIUS - 3) e.pos.multiplyScalar((ARENA_RADIUS - 3) / r);
+    const d = around ? 5 + Math.random() * 6 : 18 + Math.random() * 12;
+    const center = around ?? s.player.pos;
+    e.pos.set(center.x + Math.cos(a) * d, 0, center.z + Math.sin(a) * d);
+    clampToArena(e.pos, 3);
     e.ai.spawn = 0.8;
     s.combat.add(e);
     s.fx.flare(e.center, color, 2.5, 0.4);
     s.fx.ring(e.pos, color, 2.5);
+    return e;
   }
 
-  private spawnBoss(character: Character, level: number): Actor | null {
+  private spawnBoss(character: Character, level: number, power = 1, at?: THREE.Vector3): Actor | null {
     const s = this.stage;
     if (!s) return null;
     const stats = effectiveStats(character, this.opts.universe.items);
     const lvl = Math.max(character.level, level);
-    const boss = new Actor(character.alias, 'enemy', 'boss', stats, lvl, character.appearance, character.powers, maxHealth(stats, lvl) * 4, character);
-    boss.pos.set(s.player.pos.x, 0, s.player.pos.z - 16);
+    const boss = new Actor(character.alias, 'enemy', 'boss', stats, lvl, character.appearance, character.powers, Math.round(maxHealth(stats, lvl) * 4 * power), character);
+    if (power > 1) boss.title = 'Nemesis';
+    if (at) boss.pos.copy(at);
+    else boss.pos.set(s.player.pos.x, 0, s.player.pos.z - 16);
+    clampToArena(boss.pos, 3);
     boss.faceToward(s.player.pos);
     boss.ai.spawn = 1.5;
     boss.ai.slam = 4;
@@ -229,7 +259,6 @@ export class GameSession {
     s.fx.flare(boss.center, character.appearance.accent, 5, 0.6);
     s.fx.ring(boss.pos, character.appearance.accent, 6, 0.6);
     s.fx.shake(0.5);
-    s.hud.setBoss(boss);
     return boss;
   }
 
@@ -240,111 +269,287 @@ export class GameSession {
     return 'grunt';
   }
 
-  // --- Story flow ----------------------------------------------------------
-
-  private story(storyId: string): Story | undefined {
-    return this.opts.universe.stories.find((s) => s.id === storyId);
+  private refreshBossBar() {
+    const r = this.run;
+    const s = this.stage;
+    if (!r || !s) return;
+    s.hud.setBoss(r.bosses.find((b) => b.alive) ?? null);
   }
 
-  private async runChapter(storyId: string, index: number) {
-    const story = this.story(storyId);
-    const chapter = story?.chapters[index];
-    if (!story || !chapter) {
-      this.exit();
-      return;
-    }
-    this.buildStage(this.resolveLocation(chapter.locationId));
+  // --- Mission flow --------------------------------------------------------
+
+  private async runPlan(plan: MissionPlan) {
+    this.buildStage(this.resolveLocation(plan.locationId), plan.allyId);
     const s = this.stage!;
+    this.run = {
+      plan, phase: -1, killed: 0, spawned: 0, elapsed: 0, spawnTimer: 0, bosses: [], defeated: [], beacons: [],
+      ambush: plan.ambushId ? 'pending' : 'none', transitioning: true, done: false,
+    };
+    const run = this.run;
     s.hud.setObjective('');
-    s.hud.banner(`Chapter ${index + 1}`, chapter.title, 2.6);
+    s.hud.banner(plan.title, plan.subtitle, 2.6);
     this.paused = true;
     await wait(1200);
-    if (this.disposed) return;
-    await s.hud.dialogue(chapter.intro, this.opts.universe.accent);
-    if (this.disposed || this.stage !== s) return;
+    if (this.disposed || this.run !== run) return;
+    await s.hud.dialogue(plan.intro, this.opts.universe.accent);
+    if (this.disposed || this.run !== run) return;
     this.paused = false;
-    this.objective = { chapter, spawned: 0, killed: 0, elapsed: 0, boss: null, done: false, spawnTimer: 0 };
-    if (chapter.objective.type === 'boss') {
-      const id = chapter.objective.characterId;
-      const bossChar = this.opts.universe.characters.find((c) => c.id === id);
-      if (bossChar) this.objective.boss = this.spawnBoss(bossChar, chapter.enemyLevel);
-    }
-    s.hud.banner('Mission Start', objectiveText(chapter), 1.8);
+    this.startPhase(0);
   }
 
-  private updateObjective(dt: number) {
-    const o = this.objective;
+  private startPhase(index: number) {
+    const r = this.run;
     const s = this.stage;
-    if (!o || !s || o.done) return;
-    const ch = o.chapter;
-    const density = this.opts.universe.rules.enemyDensity;
-    const alive = s.combat.actors.filter((a) => a.team === 'enemy' && a.alive && a.archetype !== 'boss').length;
-    const maxAlive = Math.round((ch.objective.type === 'boss' ? 3 : 6) * density);
-    o.elapsed += dt;
-    o.spawnTimer -= dt;
+    if (!r || !s) return;
+    const phase = r.plan.phases[index];
+    if (!phase) {
+      void this.complete();
+      return;
+    }
+    Object.assign(r, { phase: index, killed: 0, spawned: 0, elapsed: 0, spawnTimer: 0, bosses: [], transitioning: false });
+    const label = phase.label ?? phaseLabel(phase, this.opts.universe);
+    s.hud.banner(r.plan.phases.length > 1 ? `Phase ${index + 1}` : 'Mission Start', label, 1.8);
 
-    const canSpawn = o.spawnTimer <= 0 && alive < maxAlive;
-    switch (ch.objective.type) {
+    if (phase.kind === 'bosses') {
+      phase.bossIds.forEach((id, i) => {
+        const ch = this.opts.universe.characters.find((c) => c.id === id);
+        if (!ch) return;
+        const angle = (i - (phase.bossIds.length - 1) / 2) * 0.9;
+        const at = new THREE.Vector3(s.player.pos.x + Math.sin(angle) * 16, 0, s.player.pos.z - Math.cos(angle) * 16);
+        const boss = this.spawnBoss(ch, r.plan.level, r.plan.bossPower[id] ?? 1, at);
+        if (boss) r.bosses.push(boss);
+      });
+      this.refreshBossBar();
+    } else if (phase.kind === 'patrol') {
+      r.beacons = phase.events.map((event, i) => this.makeBeacon(event, i, phase.events.length));
+    }
+  }
+
+  private makeBeacon(event: PatrolEvent, i: number, total: number): Beacon {
+    const angle = (i / total) * Math.PI * 2 + 0.6;
+    const dist = 20 + (i % 2) * 12;
+    const pos = new THREE.Vector3(Math.cos(angle) * dist, 0, Math.sin(angle) * dist);
+    const color = event.kind === 'elite' ? '#ff3e5c' : event.kind === 'rescue' ? '#3eff8b' : '#ffc23e';
+    const radius = event.kind === 'rescue' ? 9 : 5;
+    const group = new THREE.Group();
+    const pillar = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.6, 0.6, 40, 12, 1, true),
+      new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.35, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide }),
+    );
+    pillar.position.y = 20;
+    const ring = new THREE.Mesh(
+      new THREE.RingGeometry(radius - 0.5, radius, 48),
+      new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.7, side: THREE.DoubleSide }),
+    );
+    ring.rotation.x = -Math.PI / 2;
+    ring.position.y = 0.1;
+    group.add(pillar, ring);
+    group.position.copy(pos);
+    this.scene.add(group);
+    return { pos, event, state: 'idle', group, actors: new Set(), timer: 0 };
+  }
+
+  private retireBeacon(b: Beacon, flash = true) {
+    b.state = 'done';
+    this.scene.remove(b.group);
+    b.group.traverse((o) => {
+      if (o instanceof THREE.Mesh) {
+        o.geometry.dispose();
+        (o.material as THREE.Material).dispose();
+      }
+    });
+    if (flash) this.stage?.fx.ring(b.pos, '#ffffff', 6);
+  }
+
+  private updateRun(dt: number) {
+    const r = this.run;
+    const s = this.stage;
+    if (!r || !s || r.done || r.transitioning || r.phase < 0) return;
+    const phase = r.plan.phases[r.phase];
+    const density = this.opts.universe.rules.enemyDensity;
+    const level = r.plan.level;
+    const factionId = r.plan.factionId;
+    const alive = s.combat.actors.filter((a) => a.team === 'enemy' && a.alive && a.archetype !== 'boss').length;
+    r.elapsed += dt;
+    r.spawnTimer -= dt;
+    const canSpawn = (max: number) => r.spawnTimer <= 0 && alive < Math.round(max * density);
+    let complete = false;
+
+    switch (phase.kind) {
       case 'defeat': {
-        const goal = Math.max(1, Math.round(ch.objective.count * density));
-        if (canSpawn && o.spawned < goal) {
-          this.spawnMinion(this.pickMinion(ch.enemyLevel), ch.enemyLevel, ch.enemyFactionId);
-          o.spawned++;
-          o.spawnTimer = 0.6;
+        const goal = Math.max(1, Math.round(phase.count * density));
+        if (canSpawn(6) && r.spawned < goal) {
+          this.spawnMinion(this.pickMinion(level), level, factionId);
+          r.spawned++;
+          r.spawnTimer = 0.6;
         }
-        s.hud.setObjective(`Defeat enemies  ${Math.min(o.killed, goal)} / ${goal}`);
-        if (o.killed >= goal) void this.completeChapter();
+        s.hud.setObjective(`${phase.label ?? 'Defeat enemies'}  ${Math.min(r.killed, goal)} / ${goal}`);
+        complete = r.killed >= goal;
         break;
       }
       case 'survive': {
-        const left = Math.max(0, ch.objective.seconds - o.elapsed);
-        if (canSpawn) {
-          this.spawnMinion(this.pickMinion(ch.enemyLevel), ch.enemyLevel, ch.enemyFactionId);
-          o.spawnTimer = 1.2;
+        const left = Math.max(0, phase.seconds - r.elapsed);
+        if (canSpawn(6)) {
+          this.spawnMinion(this.pickMinion(level), level, factionId, s.ally?.alive ? s.ally.pos : undefined);
+          r.spawnTimer = 1.2;
         }
-        s.hud.setObjective(`Survive  ${formatTime(left)}`);
-        if (left <= 0) void this.completeChapter();
+        s.hud.setObjective(`${phase.label ?? 'Survive'}  ${formatTime(left)}`);
+        complete = left <= 0;
         break;
       }
-      case 'boss': {
-        if (canSpawn && o.elapsed > 8) {
-          this.spawnMinion('grunt', ch.enemyLevel, ch.enemyFactionId);
-          o.spawnTimer = 6;
+      case 'bosses': {
+        if (phase.minions && canSpawn(3) && r.elapsed > 8) {
+          this.spawnMinion('grunt', level, factionId);
+          r.spawnTimer = 6;
         }
-        s.hud.setObjective(o.boss ? `Defeat ${o.boss.name}` : 'Defeat the boss');
-        if (!o.boss || !o.boss.alive) void this.completeChapter();
+        const left = r.bosses.filter((b) => b.alive);
+        s.hud.setObjective(left.length ? `Defeat ${left.map((b) => b.name).join(' & ')}` : '');
+        complete = left.length === 0;
         break;
+      }
+      case 'patrol':
+        complete = this.updatePatrol(dt, canSpawn(4));
+        break;
+    }
+
+    if (complete) {
+      r.transitioning = true;
+      if (r.phase + 1 < r.plan.phases.length) {
+        s.hud.banner('Phase Complete', '', 1.4);
+        setTimeout(() => this.run === r && this.startPhase(r.phase + 1), 1600);
+      } else void this.complete();
+    }
+  }
+
+  /** Patrol: walk to beacons to trigger events; a nemesis may ambush partway. Returns true when done. */
+  private updatePatrol(dt: number, canSpawn: boolean): boolean {
+    const r = this.run!;
+    const s = this.stage!;
+    const level = r.plan.level;
+    const p = s.player.pos;
+    const active = r.beacons.find((b) => b.state === 'active');
+
+    if (!active) {
+      const idle = r.beacons.filter((b) => b.state === 'idle').sort((a, b) => a.pos.distanceTo(p) - b.pos.distanceTo(p));
+      const next = idle[0];
+      if (next && next.pos.distanceTo(p) < (next.event.kind === 'rescue' ? 9 : 5)) this.activateBeacon(next);
+      else if (next) s.hud.setObjective(`Patrol ${r.beacons.length - idle.length} / ${r.beacons.length}  ·  ${eventLabel(next.event, this.opts.universe)}  ${Math.round(next.pos.distanceTo(p))}m`);
+    } else {
+      switch (active.event.kind) {
+        case 'squad': {
+          const left = [...active.actors].filter((a) => a.alive).length;
+          s.hud.setObjective(`Squad: ${left} remaining`);
+          if (left === 0) this.retireBeacon(active);
+          break;
+        }
+        case 'rescue': {
+          const inside = p.distanceTo(active.pos) < 9;
+          if (inside) active.timer += dt;
+          if (canSpawn) {
+            this.spawnMinion(this.pickMinion(level), level, r.plan.factionId, active.pos);
+            r.spawnTimer = 1.6;
+          }
+          const left = Math.max(0, active.event.seconds - active.timer);
+          s.hud.setObjective(inside ? `Protect civilians  ${formatTime(left)}` : 'Return to the civilians!');
+          if (left <= 0) {
+            this.retireBeacon(active);
+            for (const e of s.combat.actors.filter((a) => a.team === 'enemy' && a.alive && a.archetype !== 'boss' && a.pos.distanceTo(active.pos) < 25)) {
+              s.combat.damage(e, 1e6, s.player, null);
+            }
+            s.hud.banner('Civilians Saved', '', 1.4);
+          }
+          break;
+        }
+        case 'elite': {
+          const boss = [...active.actors][0];
+          s.hud.setObjective(boss ? `Defeat ${boss.name}` : '');
+          if (!boss || !boss.alive) this.retireBeacon(active);
+          break;
+        }
+      }
+    }
+
+    const done = r.beacons.filter((b) => b.state === 'done').length;
+    if (r.ambush === 'pending' && done >= 1 && r.plan.ambushId) {
+      const nemesis = this.opts.universe.characters.find((c) => c.id === r.plan.ambushId);
+      const at = p.clone().add(new THREE.Vector3(10, 0, -10));
+      const boss = nemesis ? this.spawnBoss(nemesis, level, r.plan.bossPower[nemesis.id] ?? 1, at) : null;
+      if (boss) {
+        r.bosses.push(boss);
+        r.ambush = 'active';
+        this.refreshBossBar();
+        s.hud.banner('Ambush!', `${boss.name}: “${r.plan.ambushLine}”`, 3);
+      } else r.ambush = 'done';
+    }
+    if (r.ambush === 'active' && r.bosses.every((b) => !b.alive)) r.ambush = 'done';
+    if (r.ambush === 'active') s.hud.setObjective(`Defeat ${r.bosses.find((b) => b.alive)?.name ?? 'the ambusher'}`);
+    return done === r.beacons.length && r.ambush !== 'active' && r.ambush !== 'pending';
+  }
+
+  private activateBeacon(b: Beacon) {
+    const r = this.run!;
+    const s = this.stage!;
+    b.state = 'active';
+    s.hud.banner(eventLabel(b.event, this.opts.universe), '', 1.6);
+    if (b.event.kind === 'squad') {
+      for (let i = 0; i < Math.round(b.event.count * this.opts.universe.rules.enemyDensity); i++) {
+        const e = this.spawnMinion(this.pickMinion(r.plan.level), r.plan.level, r.plan.factionId, b.pos);
+        if (e) b.actors.add(e);
+      }
+    } else if (b.event.kind === 'elite') {
+      const bossId = b.event.bossId;
+      const ch = this.opts.universe.characters.find((c) => c.id === bossId);
+      const boss = ch ? this.spawnBoss(ch, r.plan.level, r.plan.bossPower[ch.id] ?? 1, b.pos.clone()) : null;
+      if (boss) {
+        b.actors.add(boss);
+        r.bosses.push(boss);
+        this.refreshBossBar();
       }
     }
   }
 
-  private async completeChapter() {
-    const o = this.objective;
+  private async complete() {
+    const r = this.run;
     const s = this.stage;
-    if (!o || !s || o.done || this.opts.mode.type !== 'story') return;
-    o.done = true;
+    if (!r || !s || r.done) return;
+    r.done = true;
     s.hud.setObjective('');
     s.hud.setBoss(null);
     this.slowmo = 1.2;
-    // Remaining minions flee/vanish.
     for (const a of s.combat.actors) {
       if (a.team === 'enemy' && a.alive) {
         s.fx.flare(a.center, '#ffffff', 2, 0.4);
         a.alive = false;
       }
     }
-    s.hud.banner('Mission Complete', o.chapter.title, 2.4);
+    s.hud.banner('Mission Complete', r.plan.title, 2.4);
     await wait(2200);
-    if (this.disposed) return;
+    if (this.disposed || this.run !== r) return;
     this.paused = true;
-    await s.hud.dialogue(o.chapter.outro, this.opts.universe.accent);
-    if (this.disposed) return;
+    await s.hud.dialogue(r.plan.outro, this.opts.universe.accent);
+    if (this.disposed || this.run !== r) return;
+
+    let choice: number | null = null;
+    if (r.plan.choice) {
+      const c = r.plan.choice;
+      choice = await s.hud.choose('Your Choice', c.prompt, c.options.map((o) => ({ label: o.label })));
+    }
+
+    const outcomes: Record<string, BossOutcome> = {};
+    if (r.plan.decideBosses && this.opts.bossOptions) {
+      for (const id of r.defeated) {
+        const ch = this.opts.universe.characters.find((c) => c.id === id);
+        if (!ch) continue;
+        const options = this.opts.bossOptions(id);
+        const pick = await s.hud.choose(`${ch.alias} is defeated`, 'Decide their fate. The world will remember.', options);
+        outcomes[id] = options[pick]?.id ?? 'arrest';
+      }
+    }
 
     // Rewards.
     const u = this.opts.universe;
-    const bonusXp = xpReward(o.chapter.enemyLevel, true);
-    const levels = grantXp(this.character, bonusXp);
-    const reward = u.items.find((i) => i.id === o.chapter.rewardItemId);
+    const levels = grantXp(this.character, r.plan.xp);
+    const reward = u.items.find((i) => i.id === r.plan.rewardItemId);
     let rewardNote = '';
     if (reward) {
       if (this.character.itemIds.includes(reward.id)) rewardNote = `${reward.name} (already equipped)`;
@@ -355,59 +560,68 @@ export class GameSession {
     }
     this.opts.onSave();
 
-    const mode = this.opts.mode;
-    const story = this.story(mode.storyId);
-    const next = mode.chapter + 1;
-    const hasNext = !!story && next < story.chapters.length;
+    const result: MissionResult = { victory: true, defeatedBossIds: r.defeated, survivingBossIds: [], outcomes, choice };
     s.hud.modal(
-      hasNext ? 'Chapter Complete' : 'Story Complete',
+      'Mission Complete',
       h('div', { class: 'rewards' },
-        h('div', null, `+${bonusXp} XP`),
+        h('div', null, `+${r.plan.xp} XP`),
         levels > 0 && h('div', { class: 'reward-level' }, `LEVEL UP! Now level ${this.character.level}`),
         reward && h('div', { style: `color:${RARITY_COLORS[reward.rarity]}` }, `Reward: ${rewardNote}`),
       ),
-      [
-        ...(hasNext ? [{ label: 'Next Chapter', primary: true, onClick: () => this.gotoChapter(mode.storyId, next) }] : []),
-        { label: 'Replay', onClick: () => this.gotoChapter(mode.storyId, mode.chapter) },
-        { label: 'Exit', primary: !hasNext, onClick: () => this.exit() },
-      ],
+      [{ label: 'Continue', primary: true, onClick: () => this.finish(result) }],
     );
   }
 
-  private gotoChapter(storyId: string, index: number) {
+  private finish(result: MissionResult) {
+    const next = this.opts.onFinish?.(result) ?? null;
     this.stage?.hud.modal('', null, []);
-    this.opts.mode = { type: 'story', storyId, chapter: index };
-    void this.runChapter(storyId, index);
+    if (next && !this.disposed) void this.runPlan(next);
+    else this.exit();
   }
 
   private onKill(target: Actor) {
     const s = this.stage;
+    const r = this.run;
     if (!s) return;
     if (target === s.player) {
-      if (this.opts.mode.type === 'sandbox') {
+      if (!r) {
         s.hud.banner('Down!', 'Respawning...', 1.6);
         setTimeout(() => this.respawnPlayer(), 1500);
         return;
       }
       this.slowmo = 1.5;
       setTimeout(() => {
-        if (this.disposed || this.stage !== s) return;
+        if (this.disposed || this.stage !== s || this.run !== r) return;
         this.paused = true;
-        const mode = this.opts.mode;
-        s.hud.modal('Defeated', 'Even legends fall. Get back up?', [
-          { label: 'Retry', primary: true, onClick: () => mode.type === 'story' && this.gotoChapter(mode.storyId, mode.chapter) },
-          { label: 'Exit', onClick: () => this.exit() },
+        const standing = r.bosses.filter((b) => b.alive && b.character);
+        const surviving = standing.map((b) => b.character!.id);
+        const note = standing.length ? `${standing.map((b) => b.name).join(' & ')} will remember this victory.` : 'Even legends fall. Get back up?';
+        s.hud.modal('Defeated', note, [
+          { label: 'Retry', primary: true, onClick: () => (s.hud.modal('', null, []), void this.runPlan(r.plan)) },
+          { label: 'Retreat', onClick: () => this.finishFailure(r, surviving) },
         ]);
       }, 1400);
       return;
     }
-    if (this.objective) this.objective.killed++;
-    if (target.archetype === 'boss') this.slowmo = 1;
+    if (target === s.ally) {
+      s.hud.banner(`${target.name} is down!`, '', 1.6);
+      return;
+    }
+    if (target.archetype === 'boss') {
+      this.slowmo = 1;
+      if (r && target.character && !r.defeated.includes(target.character.id)) r.defeated.push(target.character.id);
+      this.refreshBossBar();
+    } else if (r) r.killed++;
     const levels = grantXp(this.character, xpReward(target.level, target.archetype === 'boss'));
     if (levels > 0) this.applyLevelUp();
     s.combat.schedule(1.4, () => {
       if (this.stage === s) s.combat.remove(target);
     });
+  }
+
+  private finishFailure(r: Run, surviving: string[]) {
+    this.opts.onFinish?.({ victory: false, defeatedBossIds: r.defeated, survivingBossIds: surviving, outcomes: {}, choice: null });
+    this.exit();
   }
 
   private applyLevelUp() {
@@ -440,7 +654,7 @@ export class GameSession {
   // --- Sandbox -------------------------------------------------------------
 
   private startSandbox(locationId: string | null) {
-    this.buildStage(this.resolveLocation(locationId));
+    this.buildStage(this.resolveLocation(locationId), null);
     const s = this.stage!;
     s.hud.banner('Omni Sandbox', 'You are the One Above All', 2.4);
     s.hud.setObjective('Free play');
@@ -487,7 +701,8 @@ export class GameSession {
           class: 'btn primary',
           onclick: () => {
             const c = bosses.find((b) => b.id === bossSelect.value);
-            if (c) this.spawnBoss(c, this.spawnLevel);
+            const boss = c ? this.spawnBoss(c, this.spawnLevel) : null;
+            if (boss) s.hud.setBoss(boss);
           },
         }, 'Summon')),
       h('button', { class: 'btn', onclick: () => this.clearEnemies() }, 'Clear enemies'),
@@ -521,7 +736,7 @@ export class GameSession {
 
   private togglePause() {
     const s = this.stage;
-    if (!s || this.objective?.done) return;
+    if (!s || this.run?.done) return;
     if (this.paused) {
       this.paused = false;
       s.hud.modal('', null, []);
@@ -533,9 +748,10 @@ export class GameSession {
       h('p', null, 'J / click — combo attack · Shift — dodge'),
       h('p', null, 'Q E R F — powers · X — ultimate · V — toggle flight (Space/C to rise/fall)'),
       h('p', null, 'Right-drag or arrow keys — camera · Wheel — zoom'),
+      this.run && h('p', null, 'Abandoning a mission leaves the world unchanged.'),
     ), [
       { label: 'Resume', primary: true, onClick: () => this.togglePause() },
-      { label: 'Exit', onClick: () => this.exit() },
+      { label: this.run ? 'Abandon' : 'Exit', onClick: () => this.exit() },
     ]);
   }
 
@@ -563,17 +779,19 @@ export class GameSession {
     if (!this.paused) {
       this.controlPlayer(s, dt);
       for (const a of s.combat.actors) if (a.team === 'enemy') updateEnemy(a, s.combat, dt);
+      if (s.ally) updateAlly(s.ally, s.combat, dt, s.player);
       s.combat.update(dt);
       if (this.godMode) s.player.hp = s.player.maxHp;
-      this.updateObjective(dt);
+      this.updateRun(dt);
       // Dead actors topple and sink.
       for (const a of s.combat.actors) {
         if (!a.alive) {
           a.model.root.rotation.x = Math.max(-Math.PI / 2, a.model.root.rotation.x - dt * 5);
-          if (a.model.root.rotation.x <= -Math.PI / 2 + 0.01) a.model.root.position.y -= dt * 0.8;
+          if (a.model.root.rotation.x <= -Math.PI / 2 + 0.01 && a !== s.ally) a.model.root.position.y -= dt * 0.8;
         }
       }
     }
+    for (const b of this.run?.beacons ?? []) b.group.rotation.y += realDt;
     s.arena.update(this.time);
     const shake = s.fx.update(dt);
     this.updateCamera(s, realDt, shake);
@@ -641,6 +859,7 @@ export class GameSession {
     cancelAnimationFrame(this.frame);
     window.removeEventListener('resize', this.onResize);
     this.teardownStage();
+    this.run = null;
     this.input.dispose();
     this.composer?.dispose();
     this.renderer.dispose();
@@ -648,15 +867,34 @@ export class GameSession {
   }
 }
 
-function objectiveText(ch: Chapter): string {
-  switch (ch.objective.type) {
+function phaseLabel(p: Phase, u: Universe): string {
+  switch (p.kind) {
     case 'defeat':
-      return `Defeat ${ch.objective.count} enemies`;
+      return `Defeat ${p.count} enemies`;
     case 'survive':
-      return `Survive for ${formatTime(ch.objective.seconds)}`;
-    case 'boss':
-      return 'Defeat the boss';
+      return `Survive for ${formatTime(p.seconds)}`;
+    case 'bosses':
+      return `Defeat ${p.bossIds.map((id) => u.characters.find((c) => c.id === id)?.alias ?? 'the boss').join(' & ')}`;
+    case 'patrol':
+      return 'Respond to incidents across the area';
   }
+}
+
+function eventLabel(e: PatrolEvent, u: Universe): string {
+  switch (e.kind) {
+    case 'squad':
+      return 'Enemy squad sighted';
+    case 'rescue':
+      return 'Civilians in danger';
+    case 'elite':
+      return `Elite: ${u.characters.find((c) => c.id === e.bossId)?.alias ?? 'Lieutenant'}`;
+  }
+}
+
+function clampToArena(pos: THREE.Vector3, margin: number) {
+  const r = Math.hypot(pos.x, pos.z);
+  const max = ARENA_RADIUS - margin;
+  if (r > max) pos.multiplyScalar(max / r);
 }
 
 function formatTime(seconds: number): string {

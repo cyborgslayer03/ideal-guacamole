@@ -1,0 +1,885 @@
+// The living campaign: a War Table of missions generated from world state,
+// relationships that turn characters into allies or nemeses, and faction
+// hierarchies where fallen bosses are replaced by underlings or opportunists.
+//
+// Everything here is deterministic: randomness comes from the campaign seed,
+// the turn, and the mission id, so the same choices always produce the same
+// world. All functions mutate the campaign (and, for new villains and level
+// changes, the universe) in place.
+
+import { randomCharacter } from './generator';
+import type { BossOption, BossOutcome, MissionPlan, MissionResult, PatrolEvent, Phase } from './missions';
+import { chapterPhase, nextChapterIndex } from './missions';
+import { Rng } from './rng';
+import { MAX_LEVEL, clamp, combatPower } from './rules';
+import type { Character, DialogueLine, Faction, Universe } from './types';
+
+export const CAMPAIGN_SCHEMA = 1;
+
+export type CharState = 'free' | 'imprisoned' | 'dead' | 'recruited';
+export type Bond = 'nemesis' | 'rival' | 'neutral' | 'friend' | 'ally';
+
+export interface Memory {
+  turn: number;
+  /** Written from the character's point of view: "was arrested by Nova". */
+  text: string;
+}
+
+export interface Relationship {
+  /** -100 (sworn enemy) to 100 (devoted ally), toward the player's team. */
+  score: number;
+  state: CharState;
+  encounters: number;
+  /** Times the player beat them. */
+  playerWins: number;
+  /** Times they beat the player. */
+  theirWins: number;
+  /** The hero they hold the biggest grudge against. */
+  grudgeHeroId: string | null;
+  memories: Memory[];
+}
+
+export interface FactionState {
+  /** 0-100: how much of the world the faction controls. */
+  power: number;
+  leaderId: string | null;
+  lieutenantIds: string[];
+}
+
+export interface StoryProgress {
+  chapter: number;
+  done: boolean;
+}
+
+export type NewsKind = 'mission' | 'succession' | 'nemesis' | 'ally' | 'escape' | 'faction' | 'story' | 'betrayal';
+
+export interface NewsItem {
+  turn: number;
+  kind: NewsKind;
+  text: string;
+}
+
+export interface Campaign {
+  schema: number;
+  universeId: string;
+  seed: number;
+  turn: number;
+  flags: Record<string, string>;
+  factions: Record<string, FactionState>;
+  relations: Record<string, Relationship>;
+  stories: Record<string, StoryProgress>;
+  news: NewsItem[];
+}
+
+export type MissionKind = 'story' | 'patrol' | 'raid' | 'hunt' | 'vendetta' | 'ally' | 'defense';
+
+export interface Mission {
+  id: string;
+  kind: MissionKind;
+  title: string;
+  brief: string;
+  locationId: string;
+  factionId: string | null;
+  /** Bosses fought in this mission. */
+  targetIds: string[];
+  level: number;
+  /** 1-5. */
+  difficulty: number;
+  xp: number;
+  rewardItemId: string | null;
+  storyId: string | null;
+  chapter: number;
+  /** Character who must fight alongside the player (ally missions). */
+  allyId: string | null;
+  /** Nemesis who may ambush a patrol. */
+  ambushId: string | null;
+}
+
+const MAX_NEWS = 60;
+const MAX_MEMORIES = 8;
+
+// --- Setup -----------------------------------------------------------------
+
+function initialScore(c: Character): number {
+  return c.role === 'hero' ? 40 : c.role === 'villain' ? -20 : c.role === 'neutral' ? 10 : 0;
+}
+
+function newRelationship(c: Character): Relationship {
+  return { score: initialScore(c), state: 'free', encounters: 0, playerWins: 0, theirWins: 0, grudgeHeroId: null, memories: [] };
+}
+
+function seedFaction(u: Universe, f: Faction): FactionState {
+  const members = u.characters.filter((c) => c.factionId === f.id);
+  const leader = members.find((c) => c.id === f.leaderId) ?? [...members].sort((a, b) => combatPower(b, u.items) - combatPower(a, u.items))[0];
+  return {
+    power: f.alignment === 'hero' ? 40 : 50,
+    leaderId: leader?.id ?? null,
+    lieutenantIds: members.filter((c) => c !== leader).map((c) => c.id),
+  };
+}
+
+export function createCampaign(u: Universe): Campaign {
+  const c: Campaign = {
+    schema: CAMPAIGN_SCHEMA,
+    universeId: u.id,
+    seed: u.seed || hash(u.id),
+    turn: 1,
+    flags: {},
+    factions: {},
+    relations: {},
+    stories: {},
+    news: [{ turn: 1, kind: 'faction', text: 'The War Table is online. Choose your first mission.' }],
+  };
+  syncCampaign(c, u);
+  return c;
+}
+
+/**
+ * Reconciles a campaign with edits made in the creator: adds new characters,
+ * factions, and stories; drops references to deleted ones.
+ */
+export function syncCampaign(c: Campaign, u: Universe) {
+  const ids = new Set(u.characters.map((x) => x.id));
+  for (const ch of u.characters) c.relations[ch.id] ??= newRelationship(ch);
+  for (const id of Object.keys(c.relations)) if (!ids.has(id)) delete c.relations[id];
+
+  for (const f of u.factions) c.factions[f.id] ??= seedFaction(u, f);
+  for (const id of Object.keys(c.factions)) if (!u.factions.some((f) => f.id === id)) delete c.factions[id];
+  const placed = new Set<string>();
+  for (const fs of Object.values(c.factions)) {
+    if (fs.leaderId && !ids.has(fs.leaderId)) fs.leaderId = null;
+    fs.lieutenantIds = fs.lieutenantIds.filter((id) => ids.has(id) && id !== fs.leaderId);
+    if (fs.leaderId) placed.add(fs.leaderId);
+    fs.lieutenantIds.forEach((id) => placed.add(id));
+  }
+  // Characters newly assigned to a faction in the creator join as lieutenants.
+  for (const ch of u.characters) {
+    const fs = ch.factionId ? c.factions[ch.factionId] : undefined;
+    if (fs && !placed.has(ch.id) && c.relations[ch.id].state !== 'recruited') {
+      if (!fs.leaderId) fs.leaderId = ch.id;
+      else fs.lieutenantIds.push(ch.id);
+    }
+  }
+
+  for (const s of u.stories) {
+    c.stories[s.id] ??= { chapter: nextChapterIndex(s, 0, c.flags) ?? 0, done: s.chapters.length === 0 };
+  }
+  for (const id of Object.keys(c.stories)) if (!u.stories.some((s) => s.id === id)) delete c.stories[id];
+}
+
+/** Parses a saved campaign; anything unusable starts a fresh campaign. */
+export function loadCampaign(raw: unknown, u: Universe): Campaign {
+  const o = raw as Partial<Campaign> | null;
+  if (!o || typeof o !== 'object' || o.universeId !== u.id || typeof o.turn !== 'number' || typeof o.relations !== 'object' || typeof o.factions !== 'object') {
+    return createCampaign(u);
+  }
+  const c: Campaign = {
+    schema: CAMPAIGN_SCHEMA,
+    universeId: u.id,
+    seed: typeof o.seed === 'number' ? o.seed >>> 0 : u.seed,
+    turn: Math.max(1, Math.floor(o.turn)),
+    flags: typeof o.flags === 'object' && o.flags ? { ...(o.flags as Record<string, string>) } : {},
+    factions: {},
+    relations: {},
+    stories: typeof o.stories === 'object' && o.stories ? { ...(o.stories as Record<string, StoryProgress>) } : {},
+    news: Array.isArray(o.news) ? o.news.slice(0, MAX_NEWS) : [],
+  };
+  for (const [id, r] of Object.entries(o.relations as Record<string, Relationship>)) {
+    if (!r || typeof r !== 'object') continue;
+    c.relations[id] = {
+      score: clamp(Number(r.score) || 0, -100, 100),
+      state: (['free', 'imprisoned', 'dead', 'recruited'] as const).includes(r.state) ? r.state : 'free',
+      encounters: Number(r.encounters) || 0,
+      playerWins: Number(r.playerWins) || 0,
+      theirWins: Number(r.theirWins) || 0,
+      grudgeHeroId: typeof r.grudgeHeroId === 'string' ? r.grudgeHeroId : null,
+      memories: Array.isArray(r.memories) ? r.memories.slice(-MAX_MEMORIES) : [],
+    };
+  }
+  for (const [id, f] of Object.entries(o.factions as Record<string, FactionState>)) {
+    if (!f || typeof f !== 'object') continue;
+    c.factions[id] = {
+      power: clamp(Number(f.power) || 0, 0, 100),
+      leaderId: typeof f.leaderId === 'string' ? f.leaderId : null,
+      lieutenantIds: Array.isArray(f.lieutenantIds) ? f.lieutenantIds.filter((x) => typeof x === 'string') : [],
+    };
+  }
+  syncCampaign(c, u);
+  return c;
+}
+
+// --- Queries ---------------------------------------------------------------
+
+export function bond(r: Relationship): Bond {
+  if (r.state === 'recruited') return 'ally';
+  if (r.score <= -60 && r.encounters >= 2) return 'nemesis';
+  if (r.score <= -25) return 'rival';
+  if (r.score >= 60) return 'ally';
+  if (r.score >= 25) return 'friend';
+  return 'neutral';
+}
+
+export function relationOf(c: Campaign, id: string): Relationship {
+  const r = c.relations[id];
+  if (!r) throw new Error(`No relationship for ${id}`);
+  return r;
+}
+
+const isFree = (c: Campaign, id: string) => c.relations[id]?.state === 'free';
+
+/** Characters the player's team must fight. */
+export function isHostile(c: Campaign, ch: Character): boolean {
+  const r = c.relations[ch.id];
+  if (!r || r.state !== 'free') return false;
+  const b = bond(r);
+  return b === 'rival' || b === 'nemesis' || (ch.role === 'villain' && b !== 'ally' && b !== 'friend');
+}
+
+export function playableHeroes(c: Campaign, u: Universe): Character[] {
+  return u.characters.filter((ch) => {
+    const r = c.relations[ch.id];
+    if (!r) return false;
+    if (r.state === 'recruited') return true;
+    return r.state === 'free' && !isHostile(c, ch);
+  });
+}
+
+export function availableAllies(c: Campaign, u: Universe, heroId: string): Character[] {
+  return playableHeroes(c, u).filter((ch) => ch.id !== heroId && bond(relationOf(c, ch.id)) === 'ally');
+}
+
+export function factionOf(c: Campaign, characterId: string): string | null {
+  for (const [id, f] of Object.entries(c.factions)) {
+    if (f.leaderId === characterId || f.lieutenantIds.includes(characterId)) return id;
+  }
+  return null;
+}
+
+export function nemeses(c: Campaign, u: Universe): Character[] {
+  return u.characters.filter((ch) => isFree(c, ch.id) && bond(relationOf(c, ch.id)) === 'nemesis');
+}
+
+/**
+ * Who actually shows up when a story calls for a boss. If the original boss
+ * is gone, whoever took their place steps up instead.
+ */
+export function resolveBoss(c: Campaign, u: Universe, characterId: string): Character | null {
+  const original = u.characters.find((x) => x.id === characterId);
+  if (original && isHostile(c, original)) return original;
+  const fid = original?.factionId;
+  const fs = fid ? c.factions[fid] : undefined;
+  const heir = fs?.leaderId ? u.characters.find((x) => x.id === fs.leaderId) : undefined;
+  if (heir && isHostile(c, heir)) return heir;
+  return [...u.characters].filter((x) => isHostile(c, x)).sort((a, b) => combatPower(b, u.items) - combatPower(a, u.items))[0] ?? null;
+}
+
+function rosterLevel(c: Campaign, u: Universe): number {
+  return Math.max(1, ...playableHeroes(c, u).map((h) => h.level));
+}
+
+function hostileFactions(c: Campaign, u: Universe): { f: Faction; s: FactionState; leader: Character }[] {
+  const out: { f: Faction; s: FactionState; leader: Character }[] = [];
+  for (const f of u.factions) {
+    const s = c.factions[f.id];
+    const leader = s?.leaderId ? u.characters.find((x) => x.id === s.leaderId) : undefined;
+    if (s && leader && isHostile(c, leader)) out.push({ f, s, leader });
+  }
+  return out.sort((a, b) => b.s.power - a.s.power);
+}
+
+// --- Mission board -----------------------------------------------------------
+
+/** The War Table: every mission currently available, derived from world state. */
+export function missionBoard(c: Campaign, u: Universe): Mission[] {
+  const rng = new Rng(mix(c.seed, c.turn));
+  const base = rosterLevel(c, u);
+  const missions: Mission[] = [];
+  const locId = () => (u.locations.length ? rng.pick(u.locations).id : '');
+  const name = (id: string) => u.characters.find((x) => x.id === id)?.alias ?? 'Unknown';
+  const factionName = (id: string | null) => u.factions.find((f) => f.id === id)?.name ?? 'Unknown forces';
+  const add = (m: Omit<Mission, 'id' | 'level' | 'xp' | 'rewardItemId' | 'storyId' | 'chapter' | 'allyId' | 'ambushId'> & Partial<Mission>) => {
+    const level = m.level ?? clamp(base + m.difficulty - 2, 1, MAX_LEVEL);
+    missions.push({
+      id: `${m.kind}:${c.turn}:${missions.length}`,
+      level,
+      xp: 60 * m.difficulty + 20 * level,
+      rewardItemId: null,
+      storyId: null,
+      chapter: 0,
+      allyId: null,
+      ambushId: null,
+      ...m,
+    });
+  };
+  const rareLoot = () => {
+    const pool = u.items.filter((i) => i.rarity !== 'common');
+    return pool.length ? rng.pick(pool).id : null;
+  };
+
+  // Story chapters, with bosses swapped for whoever holds their position now.
+  for (const s of u.stories) {
+    const p = c.stories[s.id];
+    if (!p || p.done) continue;
+    const ch = s.chapters[p.chapter];
+    if (!ch) continue;
+    const boss = ch.objective.type === 'boss' ? resolveBoss(c, u, ch.objective.characterId) : null;
+    add({
+      kind: 'story',
+      title: `${s.title}: ${ch.title}`,
+      brief: s.synopsis || `Chapter ${p.chapter + 1} of ${s.chapters.length}.`,
+      locationId: ch.locationId,
+      factionId: ch.enemyFactionId,
+      targetIds: boss ? [boss.id] : [],
+      difficulty: boss ? 4 : 2,
+      level: Math.max(ch.enemyLevel, base - 1),
+      rewardItemId: ch.rewardItemId,
+      storyId: s.id,
+      chapter: p.chapter,
+    });
+  }
+
+  const hostile = hostileFactions(c, u);
+
+  // Vendettas: nemeses come for you personally.
+  for (const n of nemeses(c, u)) {
+    const r = relationOf(c, n.id);
+    const last = r.memories[r.memories.length - 1];
+    add({
+      kind: 'vendetta',
+      title: `Vendetta: ${n.alias}`,
+      brief: last ? `${n.alias} ${last.text}, and wants revenge.` : `${n.alias} is hunting you.`,
+      locationId: locId(),
+      factionId: factionOf(c, n.id),
+      targetIds: [n.id],
+      difficulty: 4,
+      rewardItemId: rng.chance(0.5) ? rareLoot() : null,
+    });
+  }
+
+  // Raid the strongest faction's stronghold: lieutenants first, then the boss.
+  const raidTarget = hostile.find((h) => h.s.power >= 40);
+  if (raidTarget) {
+    const lts = raidTarget.s.lieutenantIds.filter((id) => isFree(c, id)).slice(0, 2);
+    add({
+      kind: 'raid',
+      title: `Raid: ${raidTarget.f.name} Stronghold`,
+      brief: `Storm the fortress. ${lts.length ? `${lts.length > 1 ? 'Lieutenants' : 'Lieutenant'} ${lts.map(name).join(' & ')} ${lts.length > 1 ? 'guard' : 'guards'} ` : 'Defeat '}${raidTarget.leader.alias}.`,
+      locationId: locId(),
+      factionId: raidTarget.f.id,
+      targetIds: [...lts, raidTarget.leader.id],
+      difficulty: 5,
+      rewardItemId: rareLoot(),
+    });
+  }
+
+  // Hunts for faction leaders and a lieutenant on the move.
+  for (const h of hostile.slice(0, 2)) {
+    if (missions.some((m) => m.kind === 'vendetta' && m.targetIds[0] === h.leader.id)) continue;
+    add({
+      kind: 'hunt',
+      title: `Take Down ${h.leader.alias}`,
+      brief: `Leader of ${h.f.name}, which controls ${h.s.power}% of the city.`,
+      locationId: locId(),
+      factionId: h.f.id,
+      targetIds: [h.leader.id],
+      difficulty: 3,
+      rewardItemId: rng.chance(0.4) ? rareLoot() : null,
+    });
+  }
+  const lieutenants = hostile.flatMap((h) => h.s.lieutenantIds.filter((id) => isFree(c, id)).map((id) => ({ id, f: h.f })));
+  if (lieutenants.length) {
+    const lt = rng.pick(lieutenants);
+    add({
+      kind: 'hunt',
+      title: `Track ${name(lt.id)}`,
+      brief: `A lieutenant of ${lt.f.name} was spotted. Weaken the faction from within.`,
+      locationId: locId(),
+      factionId: lt.f.id,
+      targetIds: [lt.id],
+      difficulty: 2,
+    });
+  }
+  // Heroes who turned against you are fair game too.
+  for (const rogue of u.characters.filter((x) => x.role !== 'villain' && isHostile(c, x) && !factionOf(c, x.id)).slice(0, 1)) {
+    add({ kind: 'hunt', title: `Confront ${rogue.alias}`, brief: `${rogue.alias} has gone rogue.`, locationId: locId(), factionId: null, targetIds: [rogue.id], difficulty: 3 });
+  }
+
+  // Factions at full strength strike at the city.
+  for (const h of hostile.filter((x) => x.s.power >= 70)) {
+    const loc = locId();
+    add({
+      kind: 'defense',
+      title: `Defend ${u.locations.find((l) => l.id === loc)?.name ?? 'the City'}`,
+      brief: `${h.f.name} is attacking in force. Ignore it and their grip tightens.`,
+      locationId: loc,
+      factionId: h.f.id,
+      targetIds: [],
+      difficulty: 3,
+    });
+  }
+
+  // A friend in need: helping them builds the bond until they join you.
+  const friends = u.characters.filter((x) => {
+    const r = c.relations[x.id];
+    return r && r.state === 'free' && !isHostile(c, x) && r.score >= 0 && r.score < 60;
+  });
+  if (friends.length) {
+    const friend = rng.pick(friends);
+    const enemy = hostile.length ? rng.pick(hostile) : null;
+    add({
+      kind: 'ally',
+      title: `${friend.alias} Needs Backup`,
+      brief: `${friend.alias} is pinned down by ${enemy?.f.name ?? 'hostiles'}. Help them and they may join your team.`,
+      locationId: locId(),
+      factionId: enemy?.f.id ?? null,
+      targetIds: [],
+      difficulty: 2,
+      allyId: friend.id,
+    });
+  }
+
+  // Patrols: open-ended sweeps with random events, sometimes an elite or an ambush.
+  const patrolCount = Math.min(2, Math.max(1, u.locations.length));
+  for (let i = 0; i < patrolCount; i++) {
+    const enemy = hostile.length ? rng.pick(hostile) : null;
+    const loc = locId();
+    const nem = nemeses(c, u);
+    add({
+      kind: 'patrol',
+      title: `Patrol ${u.locations.find((l) => l.id === loc)?.name ?? 'the City'}`,
+      brief: `Sweep the area${enemy ? ` held by ${factionName(enemy.f.id)}` : ''}. Respond to whatever you find.`,
+      locationId: loc,
+      factionId: enemy?.f.id ?? null,
+      targetIds: enemy && enemy.s.lieutenantIds.some((id) => isFree(c, id)) && rng.chance(0.6)
+        ? [rng.pick(enemy.s.lieutenantIds.filter((id) => isFree(c, id)))]
+        : [],
+      difficulty: 1,
+      ambushId: nem.length && rng.chance(0.5) ? rng.pick(nem).id : null,
+    });
+  }
+
+  return missions;
+}
+
+// --- Planning ----------------------------------------------------------------
+
+/** Lines a character says when you meet them, based on your shared history. */
+export function barks(c: Campaign, u: Universe, characterId: string, heroName: string): DialogueLine[] {
+  const ch = u.characters.find((x) => x.id === characterId);
+  const r = c.relations[characterId];
+  if (!ch || !r) return [];
+  const speaker = ch.alias;
+  const last = r.memories[r.memories.length - 1];
+  switch (bond(r)) {
+    case 'nemesis':
+      return [
+        { speaker, text: `${heroName}. I've dreamed about this moment.` },
+        ...(last ? [{ speaker, text: `Last time, I ${last.text}. You'll pay for that.` }] : []),
+      ];
+    case 'rival':
+      return [{ speaker, text: last ? `Last time, I ${last.text}. This time will be different.` : `So you're ${heroName}. I expected more.` }];
+    case 'ally':
+    case 'friend':
+      return [{ speaker, text: `I've got your back, ${heroName}.` }];
+    default:
+      if (last?.text.startsWith('took command')) return [{ speaker, text: `I ${last.text}. Things work differently now.` }];
+      return [{ speaker, text: r.encounters ? `We meet again, ${heroName}.` : `Another hero who thinks they can stop me.` }];
+  }
+}
+
+export function planMission(c: Campaign, u: Universe, m: Mission, heroId: string, companionId: string | null): MissionPlan {
+  const hero = u.characters.find((x) => x.id === heroId);
+  const heroName = hero?.alias ?? 'Hero';
+  const rng = new Rng(mix(c.seed, c.turn, hash(m.id)));
+  const name = (id: string) => u.characters.find((x) => x.id === id)?.alias ?? 'the boss';
+  const bossPower: Record<string, number> = {};
+  for (const id of [...m.targetIds, ...(m.ambushId ? [m.ambushId] : [])]) bossPower[id] = 1 + 0.2 * (c.relations[id]?.theirWins ?? 0);
+  const allyId = m.allyId ?? companionId;
+  const allyLines = allyId && allyId !== heroId ? barks(c, u, allyId, heroName).slice(0, 1) : [];
+  const targetLines = m.targetIds.slice(-1).flatMap((id) => barks(c, u, id, heroName));
+
+  let intro: DialogueLine[] = [{ speaker: 'Command', text: m.brief }];
+  let outro: DialogueLine[] = [];
+  let phases: Phase[];
+  let choice = null;
+  switch (m.kind) {
+    case 'story': {
+      const story = u.stories.find((s) => s.id === m.storyId)!;
+      const ch = story.chapters[m.chapter];
+      const original = ch.objective.type === 'boss' ? ch.objective.characterId : null;
+      const boss = m.targetIds[0] ?? null;
+      intro = [...ch.intro];
+      if (original && boss && original !== boss) {
+        intro.push({ speaker: 'Command', text: `${name(original)} is out of the picture, but ${name(boss)} has taken their place.` }, ...barks(c, u, boss, heroName));
+      }
+      phases = [chapterPhase(ch, boss)];
+      outro = ch.outro;
+      choice = ch.choice;
+      break;
+    }
+    case 'patrol': {
+      const events: PatrolEvent[] = rng.shuffle<PatrolEvent>([
+        { kind: 'squad', count: 5 },
+        { kind: 'rescue', seconds: 25 },
+        { kind: 'squad', count: 7 },
+      ]);
+      if (m.targetIds[0]) events.splice(rng.int(1, events.length), 0, { kind: 'elite', bossId: m.targetIds[0] });
+      phases = [{ kind: 'patrol', events }];
+      break;
+    }
+    case 'raid': {
+      const leader = m.targetIds[m.targetIds.length - 1];
+      const lts = m.targetIds.slice(0, -1);
+      phases = [
+        { kind: 'defeat', count: 14, label: 'Breach the stronghold' },
+        ...(lts.length ? [{ kind: 'bosses' as const, bossIds: lts, minions: false, label: 'Defeat the lieutenants' }] : []),
+        { kind: 'bosses', bossIds: [leader], minions: true, label: `Defeat ${name(leader)}` },
+      ];
+      intro.push(...barks(c, u, leader, heroName));
+      break;
+    }
+    case 'hunt':
+    case 'vendetta':
+      phases = [{ kind: 'bosses', bossIds: m.targetIds, minions: true }];
+      intro.push(...targetLines);
+      break;
+    case 'ally':
+      phases = [{ kind: 'survive', seconds: 45, label: `Protect ${name(m.allyId!)}` }, { kind: 'defeat', count: 6, label: 'Clear the area' }];
+      intro.push({ speaker: name(m.allyId!), text: `${heroName}! Thank goodness. They're everywhere!` });
+      outro = [{ speaker: name(m.allyId!), text: `I owe you one, ${heroName}. Call me if you ever need help.` }];
+      break;
+    case 'defense':
+      phases = [{ kind: 'defeat', count: 10, label: 'Repel the assault' }, { kind: 'survive', seconds: 40, label: 'Hold the line' }];
+      break;
+  }
+
+  return {
+    title: m.title,
+    subtitle: m.kind === 'story' ? 'Story mission' : `${m.kind[0].toUpperCase()}${m.kind.slice(1)} · Difficulty ${m.difficulty}`,
+    locationId: m.locationId,
+    factionId: m.factionId,
+    level: m.level,
+    intro: [...intro, ...(m.kind === 'story' ? [] : allyLines)],
+    phases,
+    outro,
+    choice,
+    rewardItemId: m.rewardItemId,
+    xp: m.xp,
+    allyId: allyId && allyId !== heroId ? allyId : null,
+    ambushId: m.ambushId,
+    ambushLine: m.ambushId ? barks(c, u, m.ambushId, heroName)[0]?.text ?? '' : '',
+    decideBosses: true,
+    bossPower,
+  };
+}
+
+export function canRecruit(c: Campaign, u: Universe, bossId: string): boolean {
+  const ch = u.characters.find((x) => x.id === bossId);
+  const r = c.relations[bossId];
+  if (!ch || !r) return false;
+  return bond(r) !== 'nemesis' && (r.score >= -10 || ch.role === 'antihero' || ch.role === 'neutral');
+}
+
+export function bossOptions(c: Campaign, u: Universe, bossId: string): BossOption[] {
+  const recruitable = canRecruit(c, u, bossId);
+  return [
+    { id: 'arrest', label: 'Arrest', detail: 'Lock them away. They may escape someday.', disabled: false },
+    { id: 'spare', label: 'Spare', detail: 'Let them go. Mercy earns respect, and they stay free.', disabled: false },
+    { id: 'recruit', label: 'Recruit', detail: recruitable ? 'Offer them a place on your team.' : 'They despise you too much to listen.', disabled: !recruitable },
+    { id: 'finish', label: 'Finish', detail: 'End them for good. Their allies will never forget.', disabled: false },
+  ];
+}
+
+// --- Resolution --------------------------------------------------------------
+
+class Chronicle {
+  readonly items: NewsItem[] = [];
+  constructor(private readonly c: Campaign) {}
+  add(kind: NewsKind, text: string) {
+    this.items.push({ turn: this.c.turn, kind, text });
+  }
+}
+
+function remember(c: Campaign, id: string, text: string) {
+  const r = c.relations[id];
+  if (!r) return;
+  r.memories.push({ turn: c.turn, text });
+  if (r.memories.length > MAX_MEMORIES) r.memories.shift();
+}
+
+function shiftScore(c: Campaign, u: Universe, news: Chronicle, id: string, delta: number) {
+  const r = c.relations[id];
+  const ch = u.characters.find((x) => x.id === id);
+  if (!r || !ch) return;
+  const before = bond(r);
+  r.score = clamp(r.score + delta, -100, 100);
+  const after = bond(r);
+  if (before === after || r.state !== 'free') return;
+  if (after === 'nemesis') news.add('nemesis', `${ch.alias} has become your nemesis.`);
+  else if (after === 'ally') news.add('ally', `${ch.alias} now considers you an ally and can join your missions.`);
+  else if (after === 'rival' && ch.role !== 'villain') {
+    news.add('betrayal', `${ch.alias} has lost faith in you and gone rogue!`);
+    removeFromFactions(c, id);
+  }
+}
+
+function removeFromFactions(c: Campaign, id: string): string | null {
+  let led: string | null = null;
+  for (const [fid, f] of Object.entries(c.factions)) {
+    if (f.leaderId === id) {
+      f.leaderId = null;
+      led = fid;
+    }
+    f.lieutenantIds = f.lieutenantIds.filter((x) => x !== id);
+  }
+  return led;
+}
+
+function levelUp(ch: Character, by: number) {
+  ch.level = Math.min(MAX_LEVEL, ch.level + by);
+}
+
+/** Fills an empty leadership slot: an underling steps up, an outsider seizes it, or a new threat rises. */
+function succession(c: Campaign, u: Universe, rng: Rng, news: Chronicle, factionId: string, fallen: Character, how: BossOutcome, heroId: string) {
+  const f = c.factions[factionId];
+  const faction = u.factions.find((x) => x.id === factionId);
+  if (!f || !faction || f.leaderId) return;
+  const cp = (ch: Character) => combatPower(ch, u.items);
+  const byId = (id: string) => u.characters.find((x) => x.id === id);
+
+  let heir: Character | undefined;
+  const outsiders = u.characters
+    .filter((x) => x.id !== fallen.id && isHostile(c, x) && factionOf(c, x.id) !== factionId && !Object.values(c.factions).some((o) => o.leaderId === x.id))
+    .sort((a, b) => cp(b) - cp(a));
+  const underlings = f.lieutenantIds.map(byId).filter((x): x is Character => !!x && isHostile(c, x));
+
+  if (outsiders.length && (f.power < 40 || !underlings.length) && rng.chance(underlings.length ? 0.5 : 0.8)) {
+    heir = outsiders[Math.min(outsiders.length - 1, rng.int(0, 1))];
+    removeFromFactions(c, heir.id);
+    heir.factionId = factionId;
+    news.add('succession', `${heir.alias} seized control of ${faction.name} in the power vacuum left by ${fallen.alias}.`);
+  } else if (underlings.length) {
+    heir = [...underlings].sort((a, b) => cp(b) * rng.float(0.85, 1.15) - cp(a) * rng.float(0.85, 1.15))[0];
+    f.lieutenantIds = f.lieutenantIds.filter((x) => x !== heir!.id);
+    news.add('succession', `${heir.alias} rises to lead ${faction.name} after ${fallen.alias}'s fall.`);
+  } else {
+    heir = randomCharacter(rng, 'villain', factionId);
+    heir.level = Math.min(MAX_LEVEL, fallen.level + 1);
+    u.characters.push(heir);
+    c.relations[heir.id] = newRelationship(heir);
+    news.add('succession', `A new threat emerges: ${heir.alias} takes command of ${faction.name}.`);
+  }
+
+  f.leaderId = heir.id;
+  levelUp(heir, 2);
+  remember(c, heir.id, `took command of ${faction.name}`);
+  if (how === 'finish') {
+    const r = relationOf(c, heir.id);
+    r.grudgeHeroId = heroId;
+    shiftScore(c, u, news, heir.id, -25);
+  }
+
+  // Keep the ranks filled so the faction stays a threat.
+  if (f.lieutenantIds.length < 2 && rng.chance(0.5)) {
+    const recruit = randomCharacter(rng, 'villain', factionId);
+    recruit.level = Math.max(1, heir.level - 2);
+    u.characters.push(recruit);
+    c.relations[recruit.id] = newRelationship(recruit);
+    f.lieutenantIds.push(recruit.id);
+    news.add('faction', `${faction.name} recruits a new lieutenant: ${recruit.alias}.`);
+  }
+}
+
+function applyOutcome(c: Campaign, u: Universe, rng: Rng, news: Chronicle, bossId: string, outcome: BossOutcome, hero: Character) {
+  const boss = u.characters.find((x) => x.id === bossId);
+  const r = c.relations[bossId];
+  if (!boss || !r || r.state !== 'free') return;
+  r.encounters++;
+  r.playerWins++;
+  const fid = factionOf(c, bossId);
+  const faction = u.factions.find((f) => f.id === fid);
+  const heroes = u.characters.filter((x) => x.role === 'hero' && x.id !== bossId && c.relations[x.id]?.state === 'free');
+
+  let vacated = false;
+  switch (outcome) {
+    case 'arrest':
+      r.state = 'imprisoned';
+      remember(c, bossId, `was arrested by ${hero.alias}`);
+      shiftScore(c, u, news, bossId, -15);
+      news.add('mission', `${boss.alias} was arrested and taken to prison.`);
+      vacated = removeFromFactions(c, bossId) !== null;
+      break;
+    case 'spare':
+      remember(c, bossId, `was spared by ${hero.alias}`);
+      shiftScore(c, u, news, bossId, 30);
+      for (const h of heroes) shiftScore(c, u, news, h.id, 4);
+      news.add('mission', `${hero.alias} spared ${boss.alias}. They won't forget it.`);
+      break;
+    case 'recruit':
+      if (!canRecruit(c, u, bossId)) return applyOutcome(c, u, rng, news, bossId, 'spare', hero);
+      r.state = 'recruited';
+      r.score = Math.max(60, r.score + 40);
+      remember(c, bossId, `joined ${hero.alias}'s team`);
+      vacated = removeFromFactions(c, bossId) !== null;
+      boss.factionId = null;
+      news.add('ally', `${boss.alias} has joined your cause!`);
+      break;
+    case 'finish': {
+      r.state = 'dead';
+      news.add('mission', `${hero.alias} ended ${boss.alias} for good.`);
+      const members = u.characters.filter((x) => x.id !== bossId && x.factionId === boss.factionId && boss.factionId && c.relations[x.id]?.state === 'free');
+      for (const m of members) {
+        remember(c, m.id, `swore revenge on ${hero.alias} for ${boss.alias}`);
+        c.relations[m.id].grudgeHeroId = hero.id;
+        shiftScore(c, u, news, m.id, -30);
+      }
+      for (const h of heroes) shiftScore(c, u, news, h.id, -12);
+      for (const a of u.characters.filter((x) => x.role === 'antihero' && c.relations[x.id]?.state === 'free')) shiftScore(c, u, news, a.id, 5);
+      vacated = removeFromFactions(c, bossId) !== null;
+      break;
+    }
+  }
+  if (fid) c.factions[fid].power = clamp(c.factions[fid].power - (outcome === 'spare' ? 8 : 18), 0, 100);
+  if (vacated && fid && faction) succession(c, u, rng, news, fid, boss, outcome, hero.id);
+}
+
+const KIND_POWER_HIT: Record<MissionKind, number> = { story: 10, patrol: 6, raid: 25, hunt: 8, vendetta: 6, ally: 5, defense: 15 };
+
+/**
+ * Applies a finished mission to the world, advances time, and returns what
+ * happened as news for the mission report.
+ */
+export function resolveMission(c: Campaign, u: Universe, m: Mission, result: MissionResult, heroId: string): NewsItem[] {
+  const hero = u.characters.find((x) => x.id === heroId);
+  if (!hero) return [];
+  const rng = new Rng(mix(c.seed, c.turn, hash(m.id)));
+  const news = new Chronicle(c);
+
+  if (result.victory) {
+    news.add('mission', `${hero.alias} completed “${m.title}”.`);
+    for (const bossId of result.defeatedBossIds) applyOutcome(c, u, rng, news, bossId, result.outcomes[bossId] ?? 'arrest', hero);
+    if (m.factionId && c.factions[m.factionId]) c.factions[m.factionId].power = clamp(c.factions[m.factionId].power - KIND_POWER_HIT[m.kind], 0, 100);
+    if (m.kind === 'ally' && m.allyId) {
+      remember(c, m.allyId, `was saved by ${hero.alias}`);
+      shiftScore(c, u, news, m.allyId, 25);
+    }
+    if (m.kind === 'story' && m.storyId) applyStoryChoice(c, u, news, m.storyId, m.chapter, result.choice);
+  } else {
+    news.add('mission', `${hero.alias} was defeated during “${m.title}”.`);
+    for (const bossId of result.survivingBossIds) {
+      const boss = u.characters.find((x) => x.id === bossId);
+      const r = c.relations[bossId];
+      if (!boss || !r) continue;
+      r.encounters++;
+      r.theirWins++;
+      r.grudgeHeroId ??= hero.id;
+      remember(c, bossId, `defeated ${hero.alias}`);
+      levelUp(boss, 1);
+      shiftScore(c, u, news, bossId, -20);
+      news.add('nemesis', `${boss.alias} grows stronger after defeating ${hero.alias}.`);
+    }
+    if (m.factionId && c.factions[m.factionId]) c.factions[m.factionId].power = clamp(c.factions[m.factionId].power + 10, 0, 100);
+  }
+  // Ignoring a faction's assault lets it grow.
+  if (m.kind !== 'defense') {
+    for (const f of hostileFactions(c, u)) if (f.s.power >= 70) f.s.power = clamp(f.s.power + 3, 0, 100);
+  }
+
+  advanceWorld(c, u, rng, news);
+  c.news = [...news.items].reverse().concat(c.news).slice(0, MAX_NEWS);
+  return news.items;
+}
+
+/** Story choices write flags and shift relationships; progress follows the flags. */
+export function applyStoryChoice(c: Campaign, u: Universe, news: Chronicle | null, storyId: string, chapter: number, choice: number | null) {
+  const story = u.stories.find((s) => s.id === storyId);
+  const p = c.stories[storyId];
+  if (!story || !p) return;
+  const ch = story.chapters[chapter];
+  const opt = ch?.choice && choice !== null ? ch.choice.options[choice] : undefined;
+  if (ch?.choice && opt) {
+    c.flags[ch.choice.flag] = opt.value;
+    if (opt.relationshipId && opt.relationshipDelta) {
+      if (news) shiftScore(c, u, news, opt.relationshipId, opt.relationshipDelta);
+      else c.relations[opt.relationshipId].score = clamp(c.relations[opt.relationshipId].score + opt.relationshipDelta, -100, 100);
+    }
+    news?.add('story', `You chose: ${opt.label}.`);
+  }
+  const next = nextChapterIndex(story, chapter + 1, c.flags);
+  if (next === null) {
+    p.done = true;
+    news?.add('story', `Story complete: ${story.title}.`);
+  } else p.chapter = next;
+}
+
+/** One tick of world simulation: factions grow, prisoners escape, ambitious underlings strike. */
+export function advanceWorld(c: Campaign, u: Universe, rng: Rng, news: Chronicle = new Chronicle(c)) {
+  c.turn++;
+  const byId = (id: string) => u.characters.find((x) => x.id === id);
+  const cp = (ch: Character) => combatPower(ch, u.items);
+
+  for (const f of u.factions) {
+    const s = c.factions[f.id];
+    if (!s || f.alignment === 'hero') continue;
+    const leader = s.leaderId ? byId(s.leaderId) : undefined;
+    if (leader && isHostile(c, leader)) s.power = clamp(s.power + 4, 0, 100);
+  }
+
+  // Prison breaks.
+  for (const ch of u.characters) {
+    const r = c.relations[ch.id];
+    if (r?.state !== 'imprisoned' || !rng.chance(0.12 + 0.04 * r.theirWins)) continue;
+    r.state = 'free';
+    remember(c, ch.id, `escaped from prison`);
+    shiftScore(c, u, news, ch.id, -15);
+    const fs = ch.factionId ? c.factions[ch.factionId] : undefined;
+    const faction = u.factions.find((f) => f.id === ch.factionId);
+    if (fs && faction) {
+      const current = fs.leaderId ? byId(fs.leaderId) : undefined;
+      if (!current || cp(ch) > cp(current)) {
+        if (current) fs.lieutenantIds.push(current.id);
+        fs.leaderId = ch.id;
+        news.add('escape', `${ch.alias} escaped from prison and ${current ? `reclaimed ${faction.name} from ${current.alias}` : `took control of ${faction.name}`}!`);
+      } else {
+        fs.lieutenantIds.push(ch.id);
+        news.add('escape', `${ch.alias} escaped from prison and rejoined ${faction.name} under ${current.alias}.`);
+      }
+    } else news.add('escape', `${ch.alias} escaped from prison!`);
+  }
+
+  // Coups: a lieutenant who outgrows their boss may take over.
+  for (const f of u.factions) {
+    const s = c.factions[f.id];
+    const leader = s?.leaderId ? byId(s.leaderId) : undefined;
+    if (!s || !leader || !isHostile(c, leader)) continue;
+    const rival = s.lieutenantIds.map(byId).filter((x): x is Character => !!x && isHostile(c, x)).sort((a, b) => cp(b) - cp(a))[0];
+    if (rival && cp(rival) > cp(leader) * 1.05 && rng.chance(0.25)) {
+      s.lieutenantIds = s.lieutenantIds.filter((x) => x !== rival.id).concat(leader.id);
+      s.leaderId = rival.id;
+      remember(c, rival.id, `overthrew ${leader.alias}`);
+      news.add('succession', `${rival.alias} overthrew ${leader.alias} and now leads ${f.name}!`);
+    }
+  }
+}
+
+/** Lets time pass without a mission (the board refreshes). */
+export function passTime(c: Campaign, u: Universe): NewsItem[] {
+  const news = new Chronicle(c);
+  advanceWorld(c, u, new Rng(mix(c.seed, c.turn, 0x7a11)), news);
+  c.news = [...news.items].reverse().concat(c.news).slice(0, MAX_NEWS);
+  return news.items;
+}
+
+// --- Hashing -------------------------------------------------------------------
+
+export function hash(s: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619);
+  return h >>> 0;
+}
+
+function mix(...parts: number[]): number {
+  let h = 0x9e3779b9;
+  for (const p of parts) h = Math.imul(h ^ (p >>> 0), 2654435761) ^ (h >>> 13);
+  return h >>> 0;
+}

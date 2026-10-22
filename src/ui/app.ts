@@ -6,7 +6,9 @@ import { randomSeed } from '../core/rng';
 import { BundleError, bundleUniverse, parseBundle, universeFromBundle, type Bundle } from '../core/share';
 import { UniverseLibrary, loadSettings, saveSettings, type KeyValueStore, type Settings } from '../core/storage';
 import type { Universe } from '../core/types';
-import { GameSession, type SessionMode } from '../game/session';
+import { bossOptions, planMission, resolveMission, type Mission, type NewsItem } from '../core/campaign';
+import { nextChapterIndex, planChapter, type MissionPlan, type MissionResult } from '../core/missions';
+import { GameSession, type SessionOptions } from '../game/session';
 import type { EditorContext } from './context';
 import { checkbox } from './forms';
 import { clear, downloadText, h, pickFile, slug, toast } from './dom';
@@ -27,7 +29,7 @@ const TABS: { id: string; label: string; icon: string; render: (ctx: EditorConte
   { id: 'locations', label: 'Locations', icon: '⌂', render: locationsTab },
   { id: 'items', label: 'Items', icon: '◆', render: itemsTab },
   { id: 'factions', label: 'Factions', icon: '⚑', render: factionsTab },
-  { id: 'play', label: 'Play', icon: '▶', render: playTab },
+  { id: 'play', label: 'War Table', icon: '▶', render: playTab },
 ];
 
 export class App {
@@ -35,6 +37,7 @@ export class App {
   private settings: Settings;
   private session: GameSession | null = null;
   private saveTimer = 0;
+  private pendingReport: { title: string; victory: boolean; news: NewsItem[] } | null = null;
 
   constructor(private readonly root: HTMLElement, private readonly kv: KeyValueStore) {
     this.library = new UniverseLibrary(kv);
@@ -168,8 +171,23 @@ export class App {
       savedEl.textContent = 'Saved';
     };
 
+    const campaign = this.library.loadCampaign(universe);
+    const report = this.pendingReport;
+    this.pendingReport = null;
+
     const ctx: EditorContext = {
       universe,
+      campaign,
+      report,
+      saveCampaign: () => {
+        flush();
+        this.library.saveCampaign(ctx.campaign);
+      },
+      resetCampaign: () => {
+        this.library.removeCampaign(universe.id);
+        ctx.campaign = this.library.loadCampaign(universe);
+        this.library.saveCampaign(ctx.campaign);
+      },
       settings: this.settings,
       get quick() {
         return this.settings.detail === 'quick';
@@ -182,9 +200,45 @@ export class App {
       },
       rerender: () => render(),
       selection: {},
-      play: (mode, characterId) => {
+      playSandbox: (locationId, characterId) => {
         flush();
-        this.startSession(universe, characterId, mode);
+        this.startSession(universe, characterId, { plan: null, sandboxLocationId: locationId }, 'characters');
+      },
+      playStory: (storyId, chapter, characterId) => {
+        flush();
+        const story = universe.stories.find((s) => s.id === storyId);
+        if (!story?.chapters[chapter]) return;
+        // Test play keeps its own flags so branching can be tried without touching the campaign.
+        const flags: Record<string, string> = {};
+        let index = chapter;
+        this.startSession(universe, characterId, {
+          plan: planChapter(universe, story, index),
+          onFinish: (r: MissionResult): MissionPlan | null => {
+            if (!r.victory) return null;
+            const choice = story.chapters[index].choice;
+            if (choice && r.choice !== null && choice.options[r.choice]) flags[choice.flag] = choice.options[r.choice].value;
+            const next = nextChapterIndex(story, index + 1, flags);
+            if (next === null) return null;
+            index = next;
+            return planChapter(universe, story, index);
+          },
+        }, 'stories');
+      },
+      playMission: (mission: Mission, heroId: string, allyId: string | null) => {
+        flush();
+        const c = ctx.campaign;
+        this.library.saveCampaign(c);
+        this.startSession(universe, heroId, {
+          plan: planMission(c, universe, mission, heroId, allyId),
+          bossOptions: (bossId) => bossOptions(c, universe, bossId),
+          onFinish: (r) => {
+            const news = resolveMission(c, universe, mission, r, heroId);
+            this.library.save(universe);
+            this.library.saveCampaign(c);
+            this.pendingReport = { title: mission.title, victory: r.victory, news };
+            return null;
+          },
+        }, 'play');
       },
       exportBundle: (b) => this.exportBundle(b),
       openTab: (id) => {
@@ -239,7 +293,12 @@ export class App {
 
   // --- Game ----------------------------------------------------------------
 
-  private startSession(universe: Universe, characterId: string, mode: SessionMode) {
+  private startSession(
+    universe: Universe,
+    characterId: string,
+    mission: Pick<SessionOptions, 'plan' | 'sandboxLocationId' | 'bossOptions' | 'onFinish'>,
+    returnTab: string,
+  ) {
     getPreview().stop();
     this.session?.dispose();
     clear(this.root);
@@ -248,18 +307,18 @@ export class App {
         container: this.root,
         universe,
         characterId,
-        mode,
+        ...mission,
         bloom: this.settings.bloom,
         onSave: () => this.library.save(universe),
         onExit: () => {
           this.session = null;
-          this.showEditor(universe.id, 'play');
+          this.showEditor(universe.id, returnTab);
         },
       });
     } catch (e) {
       console.error(e);
       toast('Could not start the game (WebGL unavailable?)', 'error');
-      this.showEditor(universe.id, 'play');
+      this.showEditor(universe.id, returnTab);
     }
   }
 }

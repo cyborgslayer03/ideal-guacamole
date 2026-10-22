@@ -26,6 +26,9 @@ export class Hud {
   private readonly hpText = h('span', { class: 'bar-text' });
   private readonly enFill = h('div', { class: 'bar-fill energy' });
   private readonly xpFill = h('div', { class: 'bar-fill xp' });
+  private readonly allyPanel = h('div', { class: 'hud-ally hidden' });
+  private readonly allyFill = h('div', { class: 'bar-fill hp' });
+  private ally: Actor | null = null;
   private readonly levelEl = h('div', { class: 'hud-level' });
   private readonly objectiveEl = h('div', { class: 'hud-objective' });
   private readonly bossBar = h('div', { class: 'boss-bar hidden' });
@@ -61,6 +64,7 @@ export class Hud {
       h('div', { class: 'bar big' }, this.hpGhost, this.hpFill, this.hpText),
       h('div', { class: 'bar small' }, this.enFill),
       h('div', { class: 'bar tiny' }, this.xpFill),
+      this.allyPanel,
     );
 
     this.bossBar.append(this.bossName, h('div', { class: 'bar boss-track' }, this.bossFill));
@@ -139,6 +143,37 @@ export class Hud {
     return base;
   }
 
+  setAlly(ally: Actor | null) {
+    this.ally = ally;
+    this.allyPanel.classList.toggle('hidden', !ally);
+    if (ally) this.allyPanel.replaceChildren(h('span', null, ally.name), h('div', { class: 'bar small' }, this.allyFill));
+  }
+
+  /** Vertical list of choices with descriptions; resolves with the picked index. */
+  choose(title: string, prompt: string, options: { label: string; detail?: string; disabled?: boolean }[]): Promise<number> {
+    return new Promise((resolve) => {
+      this.modalEl.replaceChildren(
+        h('div', { class: 'modal' },
+          h('h2', null, title),
+          prompt && h('div', { class: 'modal-body' }, prompt),
+          h('div', { class: 'choice-list' },
+            ...options.map((o, i) =>
+              h('button', {
+                class: 'choice',
+                disabled: !!o.disabled,
+                onclick: () => {
+                  this.modalEl.classList.add('hidden');
+                  resolve(i);
+                },
+              }, h('b', null, o.label), o.detail && h('span', null, o.detail)),
+            ),
+          ),
+        ),
+      );
+      this.modalEl.classList.remove('hidden');
+    });
+  }
+
   setObjective(text: string) {
     this.objectiveEl.textContent = text;
     this.objectiveEl.classList.toggle('hidden', !text);
@@ -146,7 +181,7 @@ export class Hud {
 
   setBoss(boss: Actor | null) {
     this.bossBar.classList.toggle('hidden', !boss);
-    if (boss) this.bossName.textContent = `${boss.name}  ·  Lv ${boss.level}`;
+    if (boss) this.bossName.textContent = `${boss.title ? `${boss.title} · ` : ''}${boss.name}  ·  Lv ${boss.level}`;
     this.bossTarget = boss;
   }
   private bossTarget: Actor | null = null;
@@ -250,6 +285,10 @@ export class Hud {
     this.ultButton.style.setProperty('--cd', String(1 - p.ultimate / 100));
     this.ultButton.classList.toggle('ready', p.ultimate >= 100);
 
+    if (this.ally) {
+      this.allyFill.style.width = `${(this.ally.hp / this.ally.maxHp) * 100}%`;
+      this.allyPanel.classList.toggle('down', !this.ally.alive);
+    }
     if (this.bossTarget) this.bossFill.style.width = `${(this.bossTarget.hp / this.bossTarget.maxHp) * 100}%`;
 
     if (this.comboTimer > 0) {
@@ -263,7 +302,7 @@ export class Hud {
     // Floating enemy health bars.
     const seen = new Set<Actor>();
     for (const e of enemies) {
-      if (!e.alive || e.archetype === 'boss') continue;
+      if (!e.alive || (e.archetype === 'boss' && e === this.bossTarget)) continue;
       seen.add(e);
       let el = this.barEls.get(e);
       if (!el) {

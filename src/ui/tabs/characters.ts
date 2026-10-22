@@ -200,7 +200,7 @@ function characterEditor(ctx: EditorContext, c: Character): HTMLElement {
   );
 
   const actions = h('div', { class: 'row end' },
-    h('button', { class: 'btn primary', onclick: () => ctx.play({ type: 'sandbox', locationId: null }, c.id) }, '▶ Test in sandbox'),
+    h('button', { class: 'btn primary', onclick: () => ctx.playSandbox(null, c.id) }, '▶ Test in sandbox'),
     h('button', { class: 'btn', onclick: () => ctx.exportBundle(bundleCharacter(u, c.id)) }, 'Export'),
     h('button', {
       class: 'btn',

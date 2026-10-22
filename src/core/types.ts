@@ -104,6 +104,8 @@ export interface Faction {
   color: string;
   alignment: Role;
   description: string;
+  /** Starting leader for campaigns; null lets the strongest member lead. */
+  leaderId: string | null;
 }
 
 export type Objective =
@@ -116,6 +118,28 @@ export interface DialogueLine {
   text: string;
 }
 
+/** A chapter only plays if a story flag has a specific value. */
+export interface ChapterCondition {
+  flag: string;
+  value: string;
+}
+
+export interface ChoiceOption {
+  label: string;
+  /** Value written to the choice's flag when picked. */
+  value: string;
+  /** Optional character whose relationship with the player shifts. */
+  relationshipId: string | null;
+  relationshipDelta: number;
+}
+
+/** A decision shown after a chapter's outro; it sets a flag later chapters can require. */
+export interface StoryChoice {
+  prompt: string;
+  flag: string;
+  options: ChoiceOption[];
+}
+
 export interface Chapter {
   id: string;
   title: string;
@@ -126,6 +150,8 @@ export interface Chapter {
   enemyLevel: number;
   outro: DialogueLine[];
   rewardItemId: string | null;
+  requires: ChapterCondition | null;
+  choice: StoryChoice | null;
 }
 
 export interface Story {

@@ -2,7 +2,7 @@ import type { Bundle } from '../core/share';
 import type { Settings } from '../core/storage';
 import type { Universe } from '../core/types';
 import { normalizeUniverse } from '../core/validate';
-import type { SessionMode } from '../game/session';
+import type { Campaign, Mission, NewsItem } from '../core/campaign';
 import { h, type Child } from './dom';
 
 export interface EditorContext {
@@ -15,7 +15,16 @@ export interface EditorContext {
   rerender(): void;
   /** Selected entity id per tab, kept while switching tabs. */
   selection: Record<string, string | null>;
-  play(mode: SessionMode, characterId: string): void;
+  /** Campaign state for the War Table; persisted with saveCampaign(). */
+  campaign: Campaign;
+  saveCampaign(): void;
+  resetCampaign(): void;
+  /** Report from the last campaign mission, shown once on the War Table. */
+  report: { title: string; victory: boolean; news: NewsItem[] } | null;
+  playSandbox(locationId: string | null, characterId: string): void;
+  /** Test-play a story outside the campaign (choices only affect this run). */
+  playStory(storyId: string, chapter: number, characterId: string): void;
+  playMission(mission: Mission, heroId: string, allyId: string | null): void;
   exportBundle(bundle: Bundle | null): void;
   openTab(tab: string): void;
 }

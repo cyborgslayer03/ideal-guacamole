@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 import { generateUniverse } from '../src/core/generator';
 import { effectiveStats, minionHealth, minionStats } from '../src/core/rules';
 import type { Appearance, Character } from '../src/core/types';
-import { updateEnemy } from '../src/game/ai';
+import { updateAlly, updateEnemy } from '../src/game/ai';
 import { Actor, Combat } from '../src/game/combat';
 import { Effects } from '../src/game/effects';
 
@@ -111,5 +111,18 @@ describe('combat simulation', () => {
     expect(combat.dodge(player)).toBe(true);
     combat.damage(player, 100, e, null);
     expect(player.hp).toBe(player.maxHp);
+  });
+
+  it('an AI companion fights alongside an idle hero', () => {
+    const u = generateUniverse(8);
+    const { combat, player, kills } = setup(u.characters[0], u.items);
+    const friend = u.characters[1];
+    const ally = new Actor(friend.alias, 'player', 'ally', effectiveStats(friend, u.items), 5, friend.appearance, friend.powers, undefined, friend);
+    ally.pos.set(2, 0, 0);
+    combat.add(ally);
+    addGrunt(combat, 12, 0);
+    addGrunt(combat, -12, 0);
+    run(combat, 30, () => updateAlly(ally, combat, DT, player));
+    expect(kills.length).toBeGreaterThan(0);
   });
 });

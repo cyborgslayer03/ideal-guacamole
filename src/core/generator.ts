@@ -219,6 +219,7 @@ export function randomFaction(rng: Rng, alignment: Role): Faction {
     color: rng.color(0.45, 0.6),
     alignment,
     description: '',
+    leaderId: null,
   };
 }
 
@@ -234,10 +235,19 @@ export function randomStory(rng: Rng, universe: Pick<Universe, 'characters' | 'l
   const bossName = boss?.alias ?? 'the enemy';
   const factionName = enemyFaction?.name ?? 'the enemy';
   const reward = () => (universe.items.length && rng.chance(0.6) ? rng.pick(universe.items).id : null);
+  const storyId = newId('sty');
+  const flag = `${storyId}.approach`;
+  const chapter = (c: Omit<Chapter, 'id' | 'enemyFactionId' | 'rewardItemId' | 'requires' | 'choice'> & Partial<Chapter>): Chapter => ({
+    id: newId('chp'),
+    enemyFactionId: enemyFaction?.id ?? null,
+    rewardItemId: reward(),
+    requires: null,
+    choice: null,
+    ...c,
+  });
 
   const chapters: Chapter[] = [
-    {
-      id: newId('chp'),
+    chapter({
       title: 'First Contact',
       locationId: pickLocation(),
       intro: [
@@ -245,43 +255,68 @@ export function randomStory(rng: Rng, universe: Pick<Universe, 'characters' | 'l
         { speaker: heroName, text: 'On my way.' },
       ],
       objective: { type: 'defeat', count: 12 },
-      enemyFactionId: enemyFaction?.id ?? null,
       enemyLevel: 1,
       outro: [{ speaker: heroName, text: `These weren't random thugs. Someone is pulling the strings.` }],
-      rewardItemId: reward(),
-    },
-    {
-      id: newId('chp'),
+    }),
+    chapter({
       title: 'Hold the Line',
       locationId: pickLocation(),
-      intro: [
-        { speaker: 'Command', text: `They're sending wave after wave. Survive until reinforcements arrive!` },
-      ],
+      intro: [{ speaker: 'Command', text: `They're sending wave after wave. Survive until reinforcements arrive!` }],
       objective: { type: 'survive', seconds: 60 },
-      enemyFactionId: enemyFaction?.id ?? null,
       enemyLevel: 3,
-      outro: [{ speaker: 'Command', text: `We traced the signal. It's ${bossName}.` }],
-      rewardItemId: reward(),
-    },
+      outro: [{ speaker: 'Command', text: `We traced the signal. It's ${bossName}. But their troops are moving on the city.` }],
+      // The player's decision here picks which of the following chapters play.
+      choice: boss
+        ? {
+            prompt: `${bossName} is escaping and civilians are in danger. What do you do?`,
+            flag,
+            options: [
+              { label: `Chase ${bossName}`, value: 'pursue', relationshipId: boss.id, relationshipDelta: -15 },
+              { label: 'Protect the civilians', value: 'protect', relationshipId: protagonist?.id ?? null, relationshipDelta: 10 },
+            ],
+          }
+        : null,
+    }),
   ];
   if (boss) {
-    chapters.push({
-      id: newId('chp'),
-      title: `Showdown with ${bossName}`,
-      locationId: pickLocation(),
-      intro: [
-        { speaker: bossName, text: `So you're the one who's been ruining my plans.` },
-        { speaker: heroName, text: `It ends here, ${bossName}.` },
-      ],
-      objective: { type: 'boss', characterId: boss.id },
-      enemyFactionId: enemyFaction?.id ?? null,
-      enemyLevel: 5,
-      outro: [{ speaker: heroName, text: 'The city is safe... for now.' }],
-      rewardItemId: reward(),
-    });
+    chapters.push(
+      chapter({
+        title: `Showdown with ${bossName}`,
+        locationId: pickLocation(),
+        intro: [
+          { speaker: bossName, text: `You left the city to burn just to catch me? Bold.` },
+          { speaker: heroName, text: `It ends here, ${bossName}.` },
+        ],
+        objective: { type: 'boss', characterId: boss.id },
+        enemyLevel: 5,
+        outro: [{ speaker: heroName, text: `Got them. Now let's hope the city held.` }],
+        requires: { flag, value: 'pursue' },
+      }),
+      chapter({
+        title: 'Last Stand',
+        locationId: pickLocation(),
+        intro: [{ speaker: 'Command', text: `The civilians are evacuating. Hold this position!` }],
+        objective: { type: 'survive', seconds: 45 },
+        enemyLevel: 4,
+        outro: [{ speaker: 'Command', text: `Everyone is safe. And ${bossName} just showed their face.` }],
+        requires: { flag, value: 'protect' },
+      }),
+      chapter({
+        title: 'Final Confrontation',
+        locationId: pickLocation(),
+        intro: [
+          { speaker: bossName, text: `You chose the weak over me. That will be your undoing.` },
+          { speaker: heroName, text: `Protecting people isn't weakness, ${bossName}.` },
+        ],
+        objective: { type: 'boss', characterId: boss.id },
+        enemyLevel: 6,
+        outro: [{ speaker: heroName, text: 'The city is safe... for now.' }],
+        requires: { flag, value: 'protect' },
+      }),
+    );
   }
   return {
-    id: newId('sty'),
+    id: storyId,
     title: rng.pick(STORY_TITLES),
     synopsis: `${heroName} must stop ${factionName}${boss ? ` and their leader ${bossName}` : ''}.`,
     protagonistId: protagonist?.id ?? null,

@@ -6,7 +6,7 @@ import { Rng, randomSeed } from '../../core/rng';
 import { BIOMES, ROLES, type Faction, type Location } from '../../core/types';
 import { deleteButton, listDetail, removeById, type EditorContext } from '../context';
 import { h } from '../dom';
-import { capitalize, chips, colorInput, field, section, slider, textArea, textInput } from '../forms';
+import { capitalize, chips, colorInput, field, section, select, slider, textArea, textInput } from '../forms';
 
 export function locationsTab(ctx: EditorContext): HTMLElement {
   const u = ctx.universe;
@@ -46,7 +46,7 @@ function locationEditor(ctx: EditorContext, l: Location): HTMLElement {
       !ctx.quick && field('Description', textArea(() => l.description, (v) => ((l.description = v), ctx.changed()))),
     ),
     h('div', { class: 'row end' },
-      u.characters.length > 0 && h('button', { class: 'btn primary', onclick: () => ctx.play({ type: 'sandbox', locationId: l.id }, u.characters[0].id) }, '▶ Visit in sandbox'),
+      u.characters.length > 0 && h('button', { class: 'btn primary', onclick: () => ctx.playSandbox(l.id, u.characters[0].id) }, '▶ Visit in sandbox'),
       deleteButton(ctx, 'location', () => removeById(u.locations, l.id)),
     ),
   );
@@ -61,7 +61,7 @@ export function factionsTab(ctx: EditorContext): HTMLElement {
     label: (f) => f.name,
     sub: (f) => `${capitalize(f.alignment)} · ${u.characters.filter((c) => c.factionId === f.id).length} members`,
     color: (f) => f.color,
-    create: (): Faction => ({ id: newId('fac'), name: 'New Faction', color: '#3e9bff', alignment: 'hero', description: '' }),
+    create: (): Faction => ({ id: newId('fac'), name: 'New Faction', color: '#3e9bff', alignment: 'hero', description: '', leaderId: null }),
     random: () => randomFaction(new Rng(randomSeed()), new Rng(randomSeed()).pick(ROLES)),
     detail: (f) => factionEditor(ctx, f),
     empty: 'No factions yet. Teams, empires, secret societies...',
@@ -76,6 +76,11 @@ function factionEditor(ctx: EditorContext, f: Faction): HTMLElement {
       field('Name', textInput(() => f.name, (v) => ((f.name = v), ctx.changed()))),
       field('Alignment', chips(ROLES, () => f.alignment, (v) => ((f.alignment = v), ctx.changed()))),
       field('Color', colorInput(() => f.color, (v) => ((f.color = v), ctx.changed())), 'Enemy troops of this faction wear this color.'),
+      field('Leader', select(
+        [{ value: '', label: '— Strongest member —' }, ...members.map((c) => ({ value: c.id, label: c.alias }))],
+        () => f.leaderId ?? '',
+        (v) => ((f.leaderId = v || null), ctx.changed()),
+      ), 'Who commands the faction when a new campaign starts. Other members become lieutenants and may take over if the leader falls.'),
       !ctx.quick && field('Description', textArea(() => f.description, (v) => ((f.description = v), ctx.changed()))),
     ),
     section('Members',

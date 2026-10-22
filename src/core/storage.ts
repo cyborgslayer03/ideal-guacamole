@@ -1,6 +1,7 @@
 // Local persistence. The `KeyValueStore` seam lets tests use memory and lets a
 // future cloud sync layer sit behind the same API.
 
+import { loadCampaign, type Campaign } from './campaign';
 import type { Universe } from './types';
 import { normalizeUniverse } from './validate';
 
@@ -22,6 +23,7 @@ export interface UniverseSummary {
 
 const INDEX_KEY = 'of:index';
 const universeKey = (id: string) => `of:universe:${id}`;
+const campaignKey = (id: string) => `of:campaign:${id}`;
 
 export class UniverseLibrary {
   constructor(private readonly kv: KeyValueStore) {}
@@ -53,8 +55,28 @@ export class UniverseLibrary {
     this.kv.setItem(INDEX_KEY, JSON.stringify(index));
   }
 
+  /** The universe's campaign, created fresh if none is saved yet. */
+  loadCampaign(universe: Universe): Campaign {
+    let raw: unknown = null;
+    try {
+      raw = JSON.parse(this.kv.getItem(campaignKey(universe.id)) ?? 'null');
+    } catch {
+      raw = null;
+    }
+    return loadCampaign(raw, universe);
+  }
+
+  saveCampaign(campaign: Campaign): void {
+    this.kv.setItem(campaignKey(campaign.universeId), JSON.stringify(campaign));
+  }
+
+  removeCampaign(universeId: string): void {
+    this.kv.removeItem(campaignKey(universeId));
+  }
+
   remove(id: string): void {
     this.kv.removeItem(universeKey(id));
+    this.kv.removeItem(campaignKey(id));
     this.kv.setItem(INDEX_KEY, JSON.stringify(this.list().filter((s) => s.id !== id)));
   }
 }
