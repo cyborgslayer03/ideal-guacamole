@@ -16,15 +16,40 @@ npm run build      # typecheck + production build into dist/
 ## Game modes
 
 ### The One Above All (creator)
+- **Legends Universe:** start with twelve hand-made heroes and villains (see below), their two factions, four locations, signature gear, and the branching story *Legends Assemble*.
 - **Instant Universe:** one click rolls factions, heroes, villains, locations, gear and a three-chapter story.
 - **Quick / Full detail toggle:** Quick shows the essentials plus 🎲 randomizers for every piece. Full detail adds backstories, secret identities, custom palettes, power descriptions and dialogue writing.
-- **Characters:** a live 3D preview with costume colors, build, head style, emblem, cape and aura. Six attributes with archetype presets, up to 4 active powers plus flight, 4 gear slots, and a CP (combat power) rating.
-- **Powers:** 7 types (blast, beam, nova, dash, shield, heal, flight) × 10 elements. Each element has its own effect: fire burns, ice slows, lightning and psychic stun, shadow and nature drain life, cosmic and tech amplify damage, kinetic knocks back, and energy refunds energy.
+- **Characters:** a live 3D preview with costume colors, build, head style, emblem, cape and aura. Six attributes with archetype presets, up to 4 active powers plus movement powers, 4 gear slots, and a CP (combat power) rating.
+- **Powers:** 6 attack and support types (blast, beam, nova, dash, shield, heal) and 4 movement types (flight, teleport, super speed, super leap), across 10 elements. Each element has its own effect: fire burns, ice slows, lightning and psychic stun, shadow and nature drain life, cosmic and tech amplify damage, kinetic knocks back, and energy refunds energy.
 - **Stories:** chapters with a location, enemy faction, objective (defeat N, survive, or boss fight against any character), enemy level, reward item, and intro/outro dialogue.
 - **Laws of reality:** universe-wide power scale, gravity and enemy density.
 
+### Movement powers
+Movement powers sit on **V** (or the travel button on touch) and never take a Q/E/R/F slot.
+
+| Power | What it does |
+| --- | --- |
+| **Flight** | Toggle flight; Space and C to rise and fall. |
+| **Teleport** | Blink to your target (or 9–17 m the way you're steering), shocking enemies where you land. Short cooldown. |
+| **Super Leap** | A huge arcing jump onto your target that slams down in an area on landing. |
+| **Super Speed** | Always on: run up to 75% faster, leaving afterimages. Stacks with any of the others. |
+
+Bosses and AI companions use them too. Teleporting villains blink in beside you, and leapers crash down from across the arena.
+
+### Legends roster
+| Heroes | Movement | Villains | Movement |
+| --- | --- | --- | --- |
+| **Aegis Prime**: shield tank | Super Leap | **Overlord Kryos**: ice tyrant | Flight |
+| **Voltstream**: lightning speedster | Super Speed | **Hexmother**: void sorceress | Teleport |
+| **Seraph**: solar flier and healer | Flight | **Juggernox**: unstoppable brute | Super Leap |
+| **Nightveil**: shadow assassin | Teleport | **Blitzkrieg**: fire speedster | Super Speed + Leap |
+| **Mindwarden**: psychic controller | Teleport | **Doctor Paradox**: chrono-scientist | Teleport |
+| **Ironclad Ranger**: armored inventor | Flight | **Venomancer**: toxic predator | Super Leap + Speed |
+
+Add any of them to any universe with **★ Legends** in the Characters tab. Every legend is fully editable once added.
+
 ### Story mode (action RPG)
-- 4-hit melee combo with soft-lock lunge, dodge with i-frames, double jump, flight, 4 power skills, and an ultimate that charges as you deal damage.
+- 4-hit melee combo with soft-lock lunge, dodge with i-frames, double jump, movement powers, 4 power skills, and an ultimate that charges as you deal damage.
 - Grunts, gunners and brutes (with telegraphed slams), plus bosses built from your own characters that use their real powers.
 - XP and leveling, item rewards that auto-equip, damage numbers, combo counter, boss bars, and bloom-lit neon arenas generated from each location's biome.
 
@@ -61,7 +86,7 @@ Free play in any location. Spawn troops or waves at any level, summon any charac
 | Jump / double jump | Space | ⤒ |
 | Powers | Q E R F (or 1–4) | Skill buttons |
 | Ultimate | X | ★ |
-| Toggle flight | V (Space/C rise/fall) | ⇮ |
+| Movement power (fly / teleport / leap) | V (Space/C rise/fall when flying) | Travel button |
 | Camera | Right-drag, arrow keys, wheel | Drag |
 | Pause | Esc / P | ❚❚ |
 

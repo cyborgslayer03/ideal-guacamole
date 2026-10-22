@@ -47,6 +47,8 @@ interface ListDetailOptions<T extends { id: string }> {
   random?: () => T;
   detail: (t: T) => Child;
   empty: string;
+  /** Extra buttons beside New and Random. */
+  actions?: Child;
 }
 
 /** Shared two-pane layout: entity list on the left, editor on the right. */
@@ -65,6 +67,7 @@ export function listDetail<T extends { id: string }>(ctx: EditorContext, o: List
     h('div', { class: 'ld-actions' },
       h('button', { class: 'btn primary', onclick: () => add(o.create()) }, `+ New ${o.noun}`),
       o.random && h('button', { class: 'btn', title: `Random ${o.noun}`, onclick: () => add(o.random!()) }, '🎲'),
+      o.actions,
     ),
     ...o.items.map((item) =>
       h('button', {

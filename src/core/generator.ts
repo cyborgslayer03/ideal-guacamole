@@ -57,6 +57,9 @@ const POWER_NAMES: Record<PowerKind, string[]> = {
   shield: ['Barrier', 'Aegis', 'Ward', 'Bulwark'],
   heal: ['Mending', 'Renewal', 'Rebirth', 'Vitality'],
   flight: ['Flight', 'Soar', 'Levitation', 'Wings'],
+  teleport: ['Blink', 'Shift', 'Step', 'Warp'],
+  superspeed: ['Velocity', 'Rush', 'Momentum', 'Overdrive'],
+  leap: ['Leap', 'Bound', 'Vault', 'Pounce'],
 };
 const ELEMENT_WORDS: Record<Element, string[]> = {
   kinetic: ['Kinetic', 'Force', 'Impact'],
@@ -137,12 +140,17 @@ export function randomPower(rng: Rng, kind?: PowerKind, element?: Element): Powe
   };
 }
 
-/** A themed power set: one signature element, varied kinds, maybe flight. */
+/** A themed power set: one signature element, varied attack kinds, and usually a way to get around. */
 export function randomPowerSet(rng: Rng): Power[] {
   const element = rng.pick(ELEMENTS);
   const kinds = rng.shuffle(['beam', 'nova', 'dash', 'shield', 'heal'] as const).slice(0, rng.int(1, 3));
   const powers = [randomPower(rng, 'blast', element), ...kinds.map((k) => randomPower(rng, k, rng.chance(0.7) ? element : undefined))];
-  if (rng.chance(0.45)) powers.push(randomPower(rng, 'flight', element));
+  if (rng.chance(0.75)) {
+    const move = rng.pick(['flight', 'teleport', 'leap', 'superspeed'] as const);
+    powers.push(randomPower(rng, move, element));
+    // Speedsters sometimes pair their speed with a jump.
+    if (move === 'superspeed' && rng.chance(0.3)) powers.push(randomPower(rng, 'leap', element));
+  }
   return powers;
 }
 

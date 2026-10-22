@@ -3,10 +3,10 @@
 
 import * as THREE from 'three';
 import {
-  ELEMENT_COLORS, basicDamage, maxEnergy, maxHealth, moveSpeed, powerCooldown, powerCost, powerDamage,
-  rollDamage, energyRegen,
+  ELEMENT_COLORS, basicDamage, leapSlamRadius, maxEnergy, maxHealth, moveSpeed, powerCooldown, powerCost, powerDamage,
+  rollDamage, energyRegen, speedMultiplier, teleportRange,
 } from '../core/rules';
-import type { Appearance, Character, Element, Power, Stats } from '../core/types';
+import { isMovement, type Appearance, type Character, type Element, type Power, type Stats } from '../core/types';
 import { ARENA_RADIUS, type Obstacle } from './arena';
 import type { Effects } from './effects';
 import { CharacterModel, idleAnim, type AnimState } from './model';
@@ -78,6 +78,15 @@ export class Actor {
   /** Free-form per-archetype AI memory. */
   ai: Record<string, number> = {};
   shieldMesh: THREE.Mesh | null = null;
+  /** The movement power on the travel button (flight, teleport, or leap). */
+  readonly travel: Power | null;
+  readonly travelCooldown: number;
+  travelRemaining = 0;
+  /** Run-speed multiplier from Super Speed. */
+  readonly speedMult: number;
+  /** Set while airborne from a Super Leap; the slam lands with it. */
+  leap: { damage: number; element: Element; radius: number } | null = null;
+  private trailTimer = 0;
 
   constructor(
     readonly name: string,
@@ -96,12 +105,24 @@ export class Actor {
     const sizeBonus = archetype === 'brute' ? 1.4 : archetype === 'boss' ? 1.25 : 1;
     this.model.root.scale.setScalar(sizeBonus);
     this.radius = 0.55 * appearance.height * sizeBonus;
-    this.speed = moveSpeed(stats) * (archetype === 'brute' ? 0.6 : archetype === 'hero' || archetype === 'ally' ? 1 : 0.7);
+    this.speedMult = speedMultiplier(powers);
+    this.speed = moveSpeed(stats) * this.speedMult * (archetype === 'brute' ? 0.6 : archetype === 'hero' || archetype === 'ally' ? 1 : 0.7);
     this.canFly = powers.some((p) => p.kind === 'flight');
+    this.travel = powers.find((p) => p.kind === 'flight' || p.kind === 'teleport' || p.kind === 'leap') ?? null;
+    this.travelCooldown = this.travel ? powerCooldown(this.travel, stats) : 0;
     this.skills = powers
-      .filter((p) => p.kind !== 'flight')
+      .filter((p) => !isMovement(p.kind))
       .slice(0, 4)
       .map((p) => ({ power: p, cooldown: powerCooldown(p, stats), remaining: 0, cost: powerCost(p) }));
+  }
+
+  /** True once per interval while moving at super speed (drives afterimage trails). */
+  speedTrail(dt: number): boolean {
+    if (this.speedMult <= 1.2 || Math.hypot(this.vel.x, this.vel.z) < this.speed * 0.6) return false;
+    this.trailTimer -= dt;
+    if (this.trailTimer > 0) return false;
+    this.trailTimer = 0.05;
+    return true;
   }
 
   get busy(): boolean {
@@ -219,6 +240,117 @@ export class Combat {
     a.jumps++;
     if (a.jumps === 2) this.fx.burst(a.pos.clone(), a.skills[0] ? ELEMENT_COLORS[a.skills[0].power.element] : '#ffffff', 8, 4);
     return true;
+  }
+
+  /** The travel button: toggles flight, blinks a teleporter, or launches a leap. */
+  travel(a: Actor): boolean {
+    const p = a.travel;
+    if (!p || !a.alive || a.stun > 0) return false;
+    if (p.kind === 'flight') {
+      this.toggleFlight(a);
+      return true;
+    }
+    if (a.travelRemaining > 0 || a.castTimer > 0) return false;
+    const ok = p.kind === 'teleport' ? this.teleport(a, p) : this.superLeap(a, p);
+    if (ok) a.travelRemaining = a.travelCooldown;
+    return ok;
+  }
+
+  /** Blink toward the target (or the way you're moving) and shock whoever is near the landing spot. */
+  private teleport(a: Actor, p: Power): boolean {
+    const color = ELEMENT_COLORS[p.element];
+    const range = teleportRange(p);
+    const target = this.findTarget(a, range + 6);
+    const from = a.pos.clone();
+    const to = new THREE.Vector3();
+    // The player steers a blink with the stick; AI (and an idle player) blink to the target.
+    if (target && (a.archetype !== 'hero' || a.moveIntent.lengthSq() < 0.01)) {
+      // Appear just beside the target, on the side we came from.
+      const away = from.clone().sub(target.pos).setY(0);
+      if (away.lengthSq() < 1e-4) away.set(0, 0, 1);
+      to.copy(target.pos).addScaledVector(away.normalize(), target.radius + a.radius + 1.2);
+    } else {
+      const dir = a.moveIntent.lengthSq() > 0.01 ? a.moveIntent.clone().setY(0).normalize() : a.forward();
+      to.copy(from).addScaledVector(dir, range);
+    }
+    to.y = a.flying ? a.pos.y : 0;
+    this.keepInBounds(to, a.radius);
+    this.fx.burst(a.center, color, 18, 6, 0.14);
+    this.fx.ring(from, color, 2.5, 0.3);
+    a.pos.copy(to);
+    a.vel.set(0, 0, 0);
+    if (target) a.faceToward(target.pos);
+    a.invuln = Math.max(a.invuln, 0.25);
+    a.attackTimer = 0;
+    this.fx.flare(a.center, color, 2.6, 0.3);
+    this.fx.ring(a.pos, color, 3.2, 0.35);
+    const dmg = powerDamage(p, a.stats, a.level, this.powerScale) * (a.team === 'enemy' && a.archetype !== 'boss' ? 0.5 : 1);
+    for (const e of this.enemiesOf(a)) {
+      if (e.pos.distanceTo(a.pos) <= 3 + e.radius) this.damage(e, dmg, a, p.element, 6);
+    }
+    return true;
+  }
+
+  /** A long arcing jump toward the target that slams down on landing. */
+  private superLeap(a: Actor, p: Power): boolean {
+    if (!a.grounded || a.flying) return false;
+    const target = this.findTarget(a, 26);
+    const flightTime = 0.9;
+    const dest = target
+      ? target.pos.clone()
+      : a.pos.clone().addScaledVector(a.moveIntent.lengthSq() > 0.01 ? a.moveIntent.clone().setY(0).normalize() : a.forward(), 14);
+    this.keepInBounds(dest, a.radius);
+    a.faceToward(dest);
+    a.vel.x = (dest.x - a.pos.x) / flightTime;
+    a.vel.z = (dest.z - a.pos.z) / flightTime;
+    a.vel.y = (GRAVITY * this.gravityScale * flightTime) / 2;
+    a.grounded = false;
+    a.jumps = 2;
+    a.attackTimer = 0;
+    a.leap = {
+      damage: powerDamage(p, a.stats, a.level, this.powerScale) * (a.team === 'enemy' && a.archetype !== 'boss' ? 0.5 : 1),
+      element: p.element,
+      radius: leapSlamRadius(p),
+    };
+    this.fx.ring(a.pos, ELEMENT_COLORS[p.element], 3, 0.35);
+    this.fx.burst(a.pos.clone().setY(0.3), '#d8c8b0', 12, 6);
+    return true;
+  }
+
+  private landLeap(a: Actor) {
+    const slam = a.leap;
+    a.leap = null;
+    if (!slam || !a.alive) return;
+    const color = ELEMENT_COLORS[slam.element];
+    this.fx.ring(a.pos, color, slam.radius * 1.15, 0.5);
+    this.fx.flare(a.pos.clone().setY(0.6), color, slam.radius * 0.6, 0.3);
+    this.fx.burst(a.pos.clone().setY(0.4), '#d8c8b0', 22, 10);
+    this.fx.shake(a.archetype === 'hero' ? 0.45 : 0.3);
+    for (const e of this.enemiesOf(a)) {
+      if (e.pos.distanceTo(a.pos) <= slam.radius + e.radius && e.pos.y < 2.5) this.damage(e, slam.damage, a, slam.element, 11);
+    }
+  }
+
+  private keepInBounds(p: THREE.Vector3, radius: number) {
+    const r = Math.hypot(p.x, p.z);
+    const max = ARENA_RADIUS - radius - 1;
+    if (r > max) {
+      p.x *= max / r;
+      p.z *= max / r;
+    }
+    for (const o of this.obstacles) {
+      if (p.y > o.height) continue;
+      const dx = p.x - o.x;
+      const dz = p.z - o.z;
+      const d = Math.hypot(dx, dz);
+      const min = o.r + radius + 0.2;
+      if (d < min) {
+        const nx = d > 1e-4 ? dx / d : 1;
+        const nz = d > 1e-4 ? dz / d : 0;
+        p.x = o.x + nx * min;
+        p.z = o.z + nz * min;
+      }
+    }
   }
 
   toggleFlight(a: Actor) {
@@ -512,6 +644,10 @@ export class Combat {
     a.stun = Math.max(0, a.stun - dt);
     a.shield = Math.max(0, a.shield - dt);
     for (const s of a.skills) s.remaining = Math.max(0, s.remaining - dt);
+    a.travelRemaining = Math.max(0, a.travelRemaining - dt);
+    if (a.alive && a.speedTrail(dt)) {
+      this.fx.burst(a.center, ELEMENT_COLORS[a.skills[0]?.power.element ?? 'lightning'], 2, 1.5, 0.16);
+    }
     if (a.alive) a.energy = Math.min(a.maxEnergy, a.energy + energyRegen(a.stats) * dt);
 
     if (a.attackTimer > 0) {
@@ -552,7 +688,7 @@ export class Combat {
   }
 
   private move(a: Actor, dt: number) {
-    const freeToMove = a.alive && a.stun <= 0 && a.stagger <= 0 && a.dodgeTimer <= 0 && !a.dashHits;
+    const freeToMove = a.alive && a.stun <= 0 && a.stagger <= 0 && a.dodgeTimer <= 0 && !a.dashHits && !a.leap;
     if (a.dodgeTimer > 0) a.dodgeTimer -= dt;
 
     if (freeToMove) {
@@ -587,6 +723,7 @@ export class Combat {
       a.grounded = true;
       a.jumps = 0;
       if (a.flying && a.flyIntent < 0) a.flying = false;
+      if (a.leap) this.landLeap(a);
     } else {
       a.grounded = false;
     }

@@ -3,17 +3,19 @@ import { newId } from '../../core/id';
 import { Rng, randomSeed } from '../../core/rng';
 import {
   ELEMENT_COLORS, RARITY_COLORS, SKILL_SLOTS, basicDamage, combatPower, effectiveStats, maxEnergy, maxHealth,
-  powerCooldown, powerCost, powerDamage,
+  leapSlamRadius, powerCooldown, powerCost, powerDamage, speedMultiplier, teleportRange,
 } from '../../core/rules';
 import { bundleCharacter } from '../../core/share';
 import {
-  BUILDS, ELEMENTS, EMBLEMS, HEAD_STYLES, POWER_KINDS, ROLES, STAT_KEYS,
-  type Character, type Power, type StatKey, type Stats,
+  BUILDS, ELEMENTS, EMBLEMS, HEAD_STYLES, MOVEMENT_KINDS, POWER_KINDS, ROLES, STAT_KEYS, isMovement,
+  type Character, type MovementKind, type Power, type PowerKind, type StatKey, type Stats,
 } from '../../core/types';
 import { deleteButton, listDetail, removeById, type EditorContext } from '../context';
-import { h } from '../dom';
+import { h, toast } from '../dom';
 import { checkbox, chips, colorInput, field, section, select, slider, textArea, textInput, capitalize } from '../forms';
 import { getPreview } from '../preview';
+import { overlay } from '../overlay';
+import { LEGENDS, legendCharacter, type LegendSpec } from '../../core/roster';
 
 const STAT_LABELS: Record<StatKey, string> = {
   strength: 'Strength',
@@ -74,8 +76,53 @@ export function charactersTab(ctx: EditorContext): HTMLElement {
     create: blankCharacter,
     random: () => randomCharacter(new Rng(randomSeed())),
     detail: (c) => characterEditor(ctx, c),
-    empty: 'No characters yet. Create one, or roll a random one with 🎲.',
+    empty: 'No characters yet. Create one, roll a random one with 🎲, or recruit a ready-made Legend.',
+    actions: h('button', { class: 'btn', title: 'Add a ready-made hero or villain', onclick: () => openLegendPicker(ctx) }, '★ Legends'),
   });
+}
+
+const MOVE_BADGE: Partial<Record<PowerKind, string>> = { flight: 'Flight', teleport: 'Teleport', superspeed: 'Super Speed', leap: 'Super Leap' };
+
+/** Pick ready-made heroes and villains to add to this universe. */
+function openLegendPicker(ctx: EditorContext) {
+  const u = ctx.universe;
+  const added: string[] = [];
+  const card = (spec: LegendSpec) => {
+    const owned = () => u.characters.some((c) => c.alias === spec.alias);
+    const moves = spec.powers.filter((p) => isMovement(p.kind)).map((p) => MOVE_BADGE[p.kind]);
+    const btn = h('button', {
+      class: 'legend-card',
+      style: `--p:${spec.appearance.primary}; --a:${spec.appearance.accent}`,
+      onclick: () => {
+        const faction = u.factions.find((f) => f.alignment === spec.role);
+        const c = legendCharacter(spec, faction?.id ?? null);
+        u.characters.push(c);
+        ctx.selection.characters = c.id;
+        added.push(spec.alias);
+        btn.classList.add('owned');
+        ctx.changed();
+        toast(`${spec.alias} joined ${u.name}`);
+      },
+    },
+    h('span', { class: 'hub-face' }, spec.alias.slice(0, 1)),
+    h('span', { class: 'legend-text' },
+      h('b', null, spec.alias),
+      h('span', { class: 'muted small' }, spec.style),
+      h('span', { class: 'legend-tags' },
+        ...moves.map((m) => h('span', { class: 'bond', style: '--c:#3ee8ff' }, m)),
+        ...spec.powers.filter((p) => !isMovement(p.kind)).map((p) => h('i', { class: 'legend-dot', style: `background:${ELEMENT_COLORS[p.element]}`, title: `${p.name} (${p.kind})` })),
+      ),
+    ));
+    if (owned()) btn.classList.add('owned');
+    return btn;
+  };
+  overlay('Legends', h('div', { class: 'legend-picker' },
+    h('p', { class: 'muted' }, 'Ready-made heroes and villains, each with their own powers and way of moving. Click to add one to this universe; you can edit them afterwards.'),
+    h('div', { class: 'field-label' }, 'Heroes'),
+    h('div', { class: 'legend-grid' }, ...LEGENDS.filter((l) => l.role !== 'villain').map(card)),
+    h('div', { class: 'field-label' }, 'Villains'),
+    h('div', { class: 'legend-grid' }, ...LEGENDS.filter((l) => l.role === 'villain').map(card)),
+  ), [{ label: 'Done', primary: true, onClick: () => {} }], { wide: true, onClose: () => added.length && ctx.rerender() });
 }
 
 function characterEditor(ctx: EditorContext, c: Character): HTMLElement {
@@ -160,17 +207,29 @@ function characterEditor(ctx: EditorContext, c: Character): HTMLElement {
     !ctx.quick && field('Level', slider(() => c.level, (v) => ((c.level = v), (c.xp = 0), changed()), 1, 60)),
   );
 
-  const activeCount = c.powers.filter((p) => p.kind !== 'flight').length;
+  const activeCount = c.powers.filter((p) => !isMovement(p.kind)).length;
+  const travelPowers = c.powers.filter((p) => p.kind === 'flight' || p.kind === 'teleport' || p.kind === 'leap');
+  const addMovement = (kind: MovementKind) => {
+    c.powers.push(randomPower(rng(), kind, c.powers[0]?.element));
+    changed();
+    ctx.rerender();
+  };
   const powers = section('Powers',
-    h('p', { class: 'muted' }, `Up to ${SKILL_SLOTS} active powers map to the Q E R F skill buttons. Flight is passive.`),
+    h('p', { class: 'muted' }, `Up to ${SKILL_SLOTS} attack and support powers map to Q E R F. Movement powers go on V (Flight, Teleport, Super Leap); Super Speed is always on.`),
     ...c.powers.map((p, i) => powerEditor(ctx, c, p, i, changed)),
     h('div', { class: 'row' },
       h('button', { class: 'btn small', onclick: () => (c.powers.push(randomPower(rng())), changed(), ctx.rerender()) }, '+ Power'),
-      !c.powers.some((p) => p.kind === 'flight') &&
-        h('button', { class: 'btn small', onclick: () => (c.powers.push(randomPower(rng(), 'flight', c.powers[0]?.element)), changed(), ctx.rerender()) }, '+ Flight'),
       h('button', { class: 'btn small', onclick: () => ((c.powers = randomPowerSet(rng())), changed(), ctx.rerender()) }, '🎲 Power set'),
     ),
-    activeCount > SKILL_SLOTS && h('p', { class: 'warn' }, `Only the first ${SKILL_SLOTS} active powers are usable in combat.`),
+    h('div', { class: 'row' },
+      h('span', { class: 'field-label' }, 'Add movement'),
+      // One V-button power (flight/teleport/leap) at a time; Super Speed stacks with any of them.
+      ...MOVEMENT_KINDS.filter((k) => !c.powers.some((p) => p.kind === k) && (k === 'superspeed' || !travelPowers.length)).map((k) =>
+        h('button', { class: 'chip', onclick: () => addMovement(k) }, `+ ${MOVEMENT_LABELS[k]}`),
+      ),
+    ),
+    activeCount > SKILL_SLOTS && h('p', { class: 'warn' }, `Only the first ${SKILL_SLOTS} attack and support powers are usable in combat.`),
+    travelPowers.length > 1 && h('p', { class: 'warn' }, `Only one of Flight, Teleport, or Super Leap works on V. ${travelPowers[0].name} is used; remove it to use ${travelPowers[1].name}.`),
   );
 
   const gear = section('Gear',
@@ -220,14 +279,34 @@ function characterEditor(ctx: EditorContext, c: Character): HTMLElement {
   return h('div', { class: 'editor' }, header, appearance, stats, powers, gear, lore, actions);
 }
 
+const MOVEMENT_LABELS: Record<MovementKind, string> = {
+  flight: 'Flight',
+  teleport: 'Teleport',
+  superspeed: 'Super Speed',
+  leap: 'Super Leap',
+};
+
 function powerEditor(ctx: EditorContext, c: Character, p: Power, index: number, changed: () => void): HTMLElement {
   const stats = effectiveStats(c, ctx.universe.items);
   const info = h('div', { class: 'power-info' });
   const refreshInfo = () => {
     const dmg = powerDamage(p, stats, c.level, ctx.universe.rules.powerScale);
-    info.textContent = p.kind === 'flight'
-      ? 'Passive · press V to fly'
-      : `${dmg > 0 ? `${dmg} dmg · ` : ''}${powerCooldown(p, stats)}s cooldown · ${powerCost(p)} energy`;
+    switch (p.kind) {
+      case 'flight':
+        info.textContent = 'Movement · V to take off and land';
+        break;
+      case 'superspeed':
+        info.textContent = `Passive · run ${Math.round((speedMultiplier([p]) - 1) * 100)}% faster`;
+        break;
+      case 'teleport':
+        info.textContent = `Movement · V to blink ${Math.round(teleportRange(p))}m · ${dmg} dmg on arrival · ${powerCooldown(p, stats)}s cooldown`;
+        break;
+      case 'leap':
+        info.textContent = `Movement · V to leap · ${dmg} dmg landing slam (${leapSlamRadius(p).toFixed(1)}m) · ${powerCooldown(p, stats)}s cooldown`;
+        break;
+      default:
+        info.textContent = `${dmg > 0 ? `${dmg} dmg · ` : ''}${powerCooldown(p, stats)}s cooldown · ${powerCost(p)} energy`;
+    }
   };
   refreshInfo();
   const update = () => {

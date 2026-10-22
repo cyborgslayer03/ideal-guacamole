@@ -526,3 +526,18 @@ input[type='password']:focus, input[type='search']:focus { outline: none; border
 .hub-detail { display: flex; flex-direction: column; gap: 10px; }
 .hub-roster { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 6px; margin-top: 4px; }
 .hub-roster-row { display: flex; gap: 8px; align-items: center; min-width: 0; }
+.skill.fly.active { box-shadow: 0 0 22px var(--c), inset 0 0 12px var(--c); }
+.legend-picker { display: flex; flex-direction: column; gap: 8px; }
+.legend-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 8px; margin-bottom: 6px; }
+.legend-card {
+  display: flex; gap: 10px; align-items: flex-start; text-align: left; padding: 10px; min-width: 0;
+  background: linear-gradient(120deg, color-mix(in srgb, var(--p) 30%, var(--panel-solid)), var(--panel-solid) 70%);
+  border: 1px solid var(--line); border-left: 3px solid var(--a);
+}
+.legend-card:hover { background: linear-gradient(120deg, color-mix(in srgb, var(--p) 45%, var(--panel-solid)), var(--panel-solid) 80%); }
+.legend-card.owned { box-shadow: inset 0 0 0 1px var(--a); }
+.legend-card.owned b::after { content: ' ✓'; color: var(--hp); }
+.legend-card .hub-face { width: 34px; height: 34px; font-size: 1rem; }
+.legend-text { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.legend-tags { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; }
+.legend-dot { width: 10px; height: 10px; border-radius: 50%; box-shadow: 0 0 5px currentColor; }

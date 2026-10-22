@@ -746,7 +746,8 @@ export class GameSession {
     s.hud.modal('Paused', h('div', { class: 'pause-help' },
       h('p', null, 'WASD / joystick — move · Space — jump (double jump)'),
       h('p', null, 'J / click — combo attack · Shift — dodge'),
-      h('p', null, 'Q E R F — powers · X — ultimate · V — toggle flight (Space/C to rise/fall)'),
+      h('p', null, 'Q E R F — powers · X — ultimate'),
+      h('p', null, 'V — movement power: toggle flight (Space/C rise/fall), teleport, or super leap'),
       h('p', null, 'Right-drag or arrow keys — camera · Wheel — zoom'),
       this.run && h('p', null, 'Abandoning a mission leaves the world unchanged.'),
     ), [
@@ -813,7 +814,7 @@ export class GameSession {
 
     if (!p.alive) {
       // Drain queued presses so nothing fires on respawn.
-      for (const a of ['attack', 'dodge', 'jump', 'flight', 'ultimate', 'skill0', 'skill1', 'skill2', 'skill3'] as const) input.consume(a);
+      for (const a of ['attack', 'dodge', 'jump', 'travel', 'ultimate', 'skill0', 'skill1', 'skill2', 'skill3'] as const) input.consume(a);
       p.moveIntent.set(0, 0, 0);
       return;
     }
@@ -821,7 +822,7 @@ export class GameSession {
       if (p.flying) p.vel.y = 9;
       else s.combat.jump(p);
     }
-    if (input.consume('flight')) s.combat.toggleFlight(p);
+    if (input.consume('travel')) s.combat.travel(p);
     if (input.consume('dodge')) s.combat.dodge(p);
     if (input.consume('ultimate') && s.combat.ultimate(p)) this.slowmo = 0.5;
     for (let i = 0; i < 4; i++) if (input.consume(`skill${i}` as 'skill0')) s.combat.castPower(p, i);

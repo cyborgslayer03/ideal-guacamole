@@ -4,6 +4,7 @@
 import * as THREE from 'three';
 import { describe, expect, it } from 'vitest';
 import { generateUniverse } from '../src/core/generator';
+import { findLegend, legendCharacter } from '../src/core/roster';
 import { effectiveStats, minionHealth, minionStats } from '../src/core/rules';
 import type { Appearance, Character } from '../src/core/types';
 import { updateAlly, updateEnemy } from '../src/game/ai';
@@ -124,5 +125,64 @@ describe('combat simulation', () => {
     addGrunt(combat, -12, 0);
     run(combat, 30, () => updateAlly(ally, combat, DT, player));
     expect(kills.length).toBeGreaterThan(0);
+  });
+
+  describe('movement powers', () => {
+    const legend = (key: string) => legendCharacter(findLegend(key)!);
+
+    it('teleport blinks next to the target and shocks it', () => {
+      const { combat, player } = setup(legend('nightveil'));
+      const e = addGrunt(combat, 14, 0);
+      player.faceToward(e.pos);
+      expect(combat.travel(player)).toBe(true);
+      expect(player.pos.distanceTo(e.pos)).toBeLessThan(4);
+      expect(e.hp).toBeLessThan(e.maxHp);
+      expect(combat.travel(player)).toBe(false); // on cooldown
+      expect(player.travelRemaining).toBeGreaterThan(0);
+    });
+
+    it('super leap arcs onto the target and slams on landing', () => {
+      const { combat, player } = setup(legend('aegis'));
+      const e = addGrunt(combat, 15, 0);
+      e.ai.spawn = 99; // keep it still
+      expect(combat.travel(player)).toBe(true);
+      expect(player.grounded).toBe(false);
+      const spot = e.pos.clone();
+      run(combat, 1.5, () => {});
+      expect(player.grounded).toBe(true);
+      // Lands where the target stood (the slam knocks the target away).
+      expect(player.pos.distanceTo(spot)).toBeLessThan(3);
+      expect(e.hp).toBeLessThan(e.maxHp);
+    });
+
+    it('super speed makes a speedster outrun everyone', () => {
+      const speedster = setup(legend('voltstream')).player;
+      const tank = setup(legend('aegis')).player;
+      expect(speedster.speed).toBeGreaterThan(tank.speed * 1.5);
+      expect(speedster.travel).toBeNull(); // passive, nothing on V
+    });
+
+    it('flight toggles on the travel button', () => {
+      const { combat, player } = setup(legend('seraph'));
+      combat.travel(player);
+      expect(player.flying).toBe(true);
+      combat.travel(player);
+      expect(player.flying).toBe(false);
+    });
+
+    it('a teleporting boss closes the distance on its own', () => {
+      const u = generateUniverse(5);
+      const { combat, player } = setup(u.characters[0], u.items);
+      const hex = legend('hexmother');
+      const boss = new Actor(hex.alias, 'enemy', 'boss', hex.stats, 5, hex.appearance, hex.powers, 5000, hex);
+      boss.pos.set(0, 0, 30);
+      combat.add(boss);
+      let blinked = false;
+      run(combat, 3, () => {
+        if (boss.travelRemaining > 0) blinked = true;
+      });
+      expect(blinked).toBe(true);
+      expect(boss.pos.distanceTo(player.pos)).toBeLessThan(15);
+    });
   });
 });

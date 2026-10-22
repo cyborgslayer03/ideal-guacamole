@@ -2,6 +2,7 @@
 // and the running game session.
 
 import { emptyUniverse, generateUniverse } from '../core/generator';
+import { legendsUniverse } from '../core/roster';
 import { randomSeed } from '../core/rng';
 import { BundleError, bundleUniverse, parseBundle, universeFromBundle, type Bundle } from '../core/share';
 import { UniverseLibrary, loadSettings, saveSettings, type KeyValueStore, type Settings } from '../core/storage';
@@ -99,10 +100,11 @@ export class App {
           h('p', { class: 'home-sub' }, 'Forge universes. Create legends. Then step inside and fight as them.'),
           h('div', { class: 'row center wrap' },
             h('button', { class: 'btn primary big', onclick: () => create(generateUniverse(randomSeed())) }, '⚡ Instant Universe'),
+            h('button', { class: 'btn big', onclick: () => create(legendsUniverse()) }, '★ Legends Universe'),
             h('button', { class: 'btn big', onclick: () => create(emptyUniverse()) }, '✦ Blank Universe'),
             h('button', { class: 'btn big', onclick: importUniverse }, '⇪ Import'),
           ),
-          h('p', { class: 'muted small' }, 'Instant Universe rolls heroes, villains, worlds, gear, and a story in one click. Blank gives you total control.'),
+          h('p', { class: 'muted small' }, 'Instant rolls a random universe in one click. Legends starts you with twelve hand-made heroes and villains and their story. Blank gives you total control.'),
         ),
         h('section', { class: 'library' },
           h('h2', { class: 'panel-title' }, 'Your Multiverse'),

@@ -15,6 +15,24 @@ function steerToward(e: Actor, target: THREE.Vector3, scale = 1) {
   if (e.moveIntent.lengthSq() > 1e-4) e.moveIntent.normalize().multiplyScalar(scale);
 }
 
+/**
+ * Movement powers in AI hands: teleporters and leapers close distance (and
+ * teleporters sometimes blink in right after taking a hit). Flight stays a
+ * player-only toggle.
+ */
+function useTravel(a: Actor, combat: Combat, dt: number, dist: number, toward: THREE.Vector3): boolean {
+  const p = a.travel;
+  if (!p || p.kind === 'flight' || a.busy || a.travelRemaining > 0) return false;
+  if (cooldown(a, 'travel', dt) > 0) return false;
+  const wants = dist > 11 || (p.kind === 'teleport' && a.sinceHit < 0.3 && Math.random() < 0.25);
+  if (!wants) return false;
+  a.ai.travel = 1.2 + Math.random() * 1.5;
+  // Aim the move: out of range, teleport and leap go the way the actor is heading.
+  a.faceToward(toward);
+  steerToward(a, toward);
+  return combat.travel(a);
+}
+
 export function updateEnemy(e: Actor, combat: Combat, dt: number) {
   e.moveIntent.set(0, 0, 0);
   if (!e.alive) return;
@@ -70,6 +88,7 @@ export function updateEnemy(e: Actor, combat: Combat, dt: number) {
       break;
 
     case 'boss': {
+      if (useTravel(e, combat, dt, dist, target.pos)) break;
       if (!e.busy) {
         // Try a power first, then a telegraphed slam, then melee.
         const ready = e.skills.map((_, i) => i).filter((i) => combat.canCast(e, i));
@@ -112,10 +131,13 @@ export function updateAlly(a: Actor, combat: Combat, dt: number, leader: Actor) 
   if (!a.alive) return;
   const target = combat.findTarget(a, 22);
   if (!target) {
-    if (a.pos.distanceTo(leader.pos) > 4) steerToward(a, leader.pos);
+    const toLeader = a.pos.distanceTo(leader.pos);
+    if (toLeader > 4) steerToward(a, leader.pos);
+    if (toLeader > 16) useTravel(a, combat, dt, toLeader, leader.pos);
     return;
   }
   const gap = a.pos.distanceTo(target.pos) - a.radius - target.radius;
+  if (useTravel(a, combat, dt, gap, target.pos)) return;
   if (!a.busy) {
     const ready = a.skills.map((_, i) => i).filter((i) => combat.canCast(a, i));
     if (ready.length && cooldown(a, 'power', dt) <= 0) {

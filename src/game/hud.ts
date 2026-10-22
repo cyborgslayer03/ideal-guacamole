@@ -9,7 +9,8 @@ import type { Actor } from './combat';
 import type { Action, Input } from './input';
 
 const KIND_ICON: Record<PowerKind, string> = {
-  blast: '✦', beam: '═', nova: '✺', dash: '➤', shield: '⛨', heal: '✚', flight: '⇮',
+  blast: '✦', beam: '═', nova: '✺', dash: '➤', shield: '⛨', heal: '✚',
+  flight: '⇮', teleport: '⌖', superspeed: '≫', leap: '⤊',
 };
 
 const isTouch = () => window.matchMedia('(pointer: coarse)').matches;
@@ -43,6 +44,7 @@ export class Hud {
   readonly sidePanel = h('div', { class: 'omni-panel hidden' });
   private skillButtons: SkillButton[] = [];
   private ultButton: HTMLElement;
+  private travelButton: HTMLElement | null = null;
   private barEls = new Map<Actor, HTMLElement>();
   private combo = 0;
   private comboTimer = 0;
@@ -87,7 +89,7 @@ export class Hud {
       h('button', { class: 'skill attack', onpointerdown: press('attack') }, h('span', { class: 'skill-icon' }, '✊'), h('span', { class: 'key' }, 'J')),
       h('button', { class: 'skill dodge', onpointerdown: press('dodge') }, h('span', { class: 'skill-icon' }, '»'), h('span', { class: 'key' }, '⇧')),
       h('button', { class: 'skill jump', onpointerdown: press('jump') }, h('span', { class: 'skill-icon' }, '⤒'), h('span', { class: 'key' }, '␣')),
-      player.canFly && h('button', { class: 'skill fly', onpointerdown: press('flight') }, h('span', { class: 'skill-icon' }, KIND_ICON.flight), h('span', { class: 'key' }, 'V')),
+      this.buildTravelButton(press),
       this.ultButton,
       ...skills,
     );
@@ -102,7 +104,19 @@ export class Hud {
 
     this.root.append(this.enemyBars, this.numbers, top, this.comboEl, controls, this.sidePanel, this.bannerEl, this.dialogueEl, this.modalEl);
     if (isTouch()) this.root.append(this.buildJoystick());
-    else this.root.append(h('div', { class: 'hud-hint' }, 'WASD move · J/Click attack · Shift dodge · Space jump · Q E R F powers · X ultimate · Right-drag camera'));
+    else this.root.append(h('div', { class: 'hud-hint' }, 'WASD move · J/Click attack · Shift dodge · Space jump · Q E R F powers · V movement power · X ultimate · Right-drag camera'));
+  }
+
+  private buildTravelButton(press: (a: Action) => (e: Event) => void): HTMLElement | null {
+    const p = this.player.travel;
+    if (!p) return null;
+    this.travelButton = h('button', {
+      class: 'skill fly',
+      style: `--c:${ELEMENT_COLORS[p.element]}`,
+      title: `${p.name} (${p.kind})`,
+      onpointerdown: press('travel'),
+    }, h('span', { class: 'skill-icon' }, KIND_ICON[p.kind]), h('span', { class: 'key' }, 'V'));
+    return this.travelButton;
   }
 
   private buildJoystick(): HTMLElement {
@@ -283,6 +297,11 @@ export class Hud {
       b.el.dataset.cd = s.remaining > 0 ? s.remaining.toFixed(s.remaining < 1 ? 1 : 0) : '';
     }
     this.ultButton.style.setProperty('--cd', String(1 - p.ultimate / 100));
+    if (this.travelButton) {
+      this.travelButton.style.setProperty('--cd', p.travelCooldown ? String(p.travelRemaining / p.travelCooldown) : '0');
+      this.travelButton.dataset.cd = p.travelRemaining > 0 ? p.travelRemaining.toFixed(1) : '';
+      this.travelButton.classList.toggle('active', p.flying);
+    }
     this.ultButton.classList.toggle('ready', p.ultimate >= 100);
 
     if (this.ally) {

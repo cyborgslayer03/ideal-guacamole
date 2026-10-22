@@ -1,14 +1,14 @@
 // Game balance: how stats, levels, items, and powers turn into numbers.
 // Kept free of rendering code so it can be unit-tested and reused server-side.
 
-import { STAT_KEYS, type Character, type Element, type Item, type Power, type PowerKind, type Rarity, type Stats } from './types';
+import { STAT_KEYS, isMovement, type Character, type Element, type Item, type Power, type PowerKind, type Rarity, type Stats } from './types';
 
 export const STAT_MIN = 1;
 export const STAT_MAX = 10;
 /** Items can push an effective stat past the base cap up to this value. */
 export const EFFECTIVE_STAT_MAX = 15;
 export const MAX_LEVEL = 60;
-/** Number of power slots usable in combat (flight is passive and takes none). */
+/** Number of power slots usable in combat (movement powers take none). */
 export const SKILL_SLOTS = 4;
 
 export const ELEMENT_COLORS: Record<Element, string> = {
@@ -77,6 +77,9 @@ const KIND_DAMAGE: Record<PowerKind, number> = {
   shield: 0,
   heal: 0,
   flight: 0,
+  teleport: 0.6, // arrival shockwave
+  superspeed: 0,
+  leap: 1.1, // landing slam
 };
 
 export function powerDamage(power: Power, stats: Stats, level: number, powerScale = 1): number {
@@ -92,6 +95,9 @@ const KIND_COOLDOWN: Record<PowerKind, number> = {
   shield: 16,
   heal: 20,
   flight: 0,
+  teleport: 3.5,
+  superspeed: 0,
+  leap: 5,
 };
 
 /** Seconds. Smarter characters recover faster. */
@@ -101,8 +107,24 @@ export function powerCooldown(power: Power, stats: Stats): number {
 }
 
 export function powerCost(power: Power): number {
-  if (power.kind === 'flight') return 0;
+  if (isMovement(power.kind)) return 0;
   return Math.round(10 + power.potency * 3);
+}
+
+/** Run-speed multiplier from a Super Speed power (1 without one). */
+export function speedMultiplier(powers: readonly Power[]): number {
+  const p = powers.find((x) => x.kind === 'superspeed');
+  return p ? 1.25 + p.potency * 0.05 : 1;
+}
+
+/** How far a teleport carries, in meters. */
+export function teleportRange(power: Power): number {
+  return 9 + power.potency * 0.8;
+}
+
+/** Radius of a Super Leap's landing slam, in meters. */
+export function leapSlamRadius(power: Power): number {
+  return 4 + power.potency * 0.3;
 }
 
 export function xpForLevel(level: number): number {
@@ -135,7 +157,7 @@ const RARITY_WEIGHT: Record<Rarity, number> = { common: 1, rare: 1.5, epic: 2.2,
 export function combatPower(character: Character, items: readonly Item[]): number {
   const stats = effectiveStats(character, items);
   const statSum = STAT_KEYS.reduce((sum, k) => sum + stats[k], 0);
-  const powerSum = character.powers.reduce((sum, p) => sum + p.potency * (p.kind === 'flight' ? 0.5 : 1), 0);
+  const powerSum = character.powers.reduce((sum, p) => sum + p.potency * (isMovement(p.kind) ? 0.5 : 1), 0);
   const gear = character.itemIds.reduce((sum, id) => {
     const item = items.find((i) => i.id === id);
     return item ? sum + RARITY_WEIGHT[item.rarity] : sum;

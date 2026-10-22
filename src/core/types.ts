@@ -15,8 +15,16 @@ export const ELEMENTS = [
 ] as const;
 export type Element = (typeof ELEMENTS)[number];
 
-export const POWER_KINDS = ['blast', 'beam', 'nova', 'dash', 'shield', 'heal', 'flight'] as const;
+export const POWER_KINDS = ['blast', 'beam', 'nova', 'dash', 'shield', 'heal', 'flight', 'teleport', 'superspeed', 'leap'] as const;
 export type PowerKind = (typeof POWER_KINDS)[number];
+
+/** Movement powers: used on the travel button (or passive), never on Q/E/R/F. */
+export const MOVEMENT_KINDS = ['flight', 'teleport', 'superspeed', 'leap'] as const;
+export type MovementKind = (typeof MOVEMENT_KINDS)[number];
+
+export function isMovement(kind: PowerKind): kind is MovementKind {
+  return (MOVEMENT_KINDS as readonly string[]).includes(kind);
+}
 
 export interface Power {
   id: string;
