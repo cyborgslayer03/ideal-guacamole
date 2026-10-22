@@ -19,6 +19,7 @@ npm run build      # typecheck + production build into dist/
 - **Legends Universe:** start with twelve hand-made heroes and villains (see below), their two factions, four locations, signature gear, and the branching story *Legends Assemble*.
 - **Instant Universe:** one click rolls factions, heroes, villains, locations, gear and a three-chapter story.
 - **Quick / Full detail toggle:** Quick shows the essentials plus 🎲 randomizers for every piece. Full detail adds backstories, secret identities, custom palettes, power descriptions and dialogue writing.
+- **Your Multiverse:** every saved universe is listed on the home screen. Delete one with 🗑, or use **Manage** to select several (or all) and delete them at once.
 - **Characters:** a live 3D preview with costume colors, build, head style, emblem, cape and aura, or an imported 3D model. Six attributes with archetype presets, up to 4 active powers (27 power types) plus movement powers and passives, 4 gear slots, and a CP (combat power) rating.
 - **Powers:** 6 attack and support types (blast, beam, nova, dash, shield, heal) and 4 movement types (flight, teleport, super speed, super leap), across 10 elements. Each element has its own effect: fire burns, ice slows, lightning and psychic stun, shadow and nature drain life, cosmic and tech amplify damage, kinetic knocks back, and energy refunds energy.
 - **Stories:** chapters with a location, enemy faction, objective (defeat N, survive, or boss fight against any character), enemy level, reward item, and intro/outro dialogue.
@@ -34,6 +35,9 @@ Movement powers sit on **V** (or the travel button on touch) and never take a Q/
 | **Super Leap** | A huge arcing jump onto your target that slams down in an area on landing. |
 | **Super Speed** | Always on: run up to 75% faster, leaving afterimages. Stacks with any of the others. |
 | **Web Swing** | Shoot a line to an anchor overhead and swing toward your target or onto rooftops. Works mid-air, so swings chain. |
+| **Portal** | Open a linked pair of portals: one at your feet, one at the destination. You step through, and for several seconds anyone (allies, enemies) can use either end. |
+
+**Tap V** to auto-target, or **hold V** (or hold the travel button on touch) to **aim by hand**. Time slows, a landing ring and flight arc follow your mouse (or a reticle at the screen center on touch), and releasing sends you exactly there: onto a rooftop, a ledge, or a spot behind the enemy. The ring turns orange when the aim is clamped to the power's range.
 
 Bosses and AI companions use them too. Teleporting villains blink in beside you, and leapers crash down from across the arena.
 
@@ -65,14 +69,25 @@ AI bosses, companions, and enemies use all of them, and only when they make sens
 | Heroes | Movement | Villains | Movement |
 | --- | --- | --- | --- |
 | **Aegis Prime**: shield tank | Super Leap | **Overlord Kryos**: ice tyrant | Flight |
-| **Voltstream**: lightning speedster with Storm Call | Super Speed | **Hexmother**: void sorceress with Reality Warp | Teleport |
+| **Voltstream**: lightning speedster with Storm Call | Super Speed | **Hexmother**: void sorceress with Reality Warp | Portal |
 | **Seraph**: solar flier with Optic Blast, and a healer | Flight | **Juggernox**: brute with Giant Growth and Healing Factor | Super Leap |
 | **Nightveil**: shadow assassin with Stealth | Teleport | **Blitzkrieg**: fire speedster with Sonic Scream | Super Speed + Leap |
-| **Mindwarden**: Telekinesis and Mind Control | Teleport | **Doctor Paradox**: chrono-scientist with Time Stop | Teleport |
+| **Mindwarden**: Telekinesis and Mind Control | Portal | **Doctor Paradox**: chrono-scientist with Time Stop | Teleport |
 | **Silkstrider**: web-slinger with Web Shot and Stretch Grab | Web Swing | **Venomancer**: toxic predator with Venom Web | Web Swing + Speed |
 | **Ironclad Ranger**: armored inventor with Summon drones | Flight | | |
 
 Add any of them to any universe with **★ Legends** in the Characters tab. Every legend is fully editable once added.
+
+### Destructible scenery
+Arenas are scattered with cars, crates and fuel barrels. Any attack or explosion can smash them, and barrels explode on whoever was nearby. **Telekinesis** picks up the nearest prop and hurls it at the target instead of lifting the enemy. Nobody targets scenery on purpose, so it never distracts the AI.
+
+### Finishers, banter and photo mode
+- **Finishers:** the blow that defeats a boss, or the last enemy of a mission, plays in cinematic slow motion with a sweeping camera.
+- **Squad banter:** AI teammates talk during missions: at the start, after combos, revives, knockdowns, boss phases, low health and property damage. Their tone follows their relationship with the hero (warm, neutral or prickly).
+- **Photo mode** (**O**, or from the pause menu): freezes the action and hides the HUD. You can orbit and zoom freely, pick a filter (Natural, Comic halftone, Noir, Pop, Golden Age, Cosmic), add a comic caption box, and **Save image** to download a PNG with everything baked in.
+
+### Daily Challenge
+The home screen has one seeded mission per day, the same for everyone: a generated hero (sometimes with a squad), a boss, and one or two rule modifiers (Low Gravity, Swarm, Overcharged, Heavy World, Skeleton Crew). Your best score and grade for the day are kept, along with a day streak. It never touches your own universes.
 
 ### Team combos
 When one hero's power hits an enemy, it's **marked** for 3 seconds (a flicker of the power's color above it). If a *different* teammate then lands a power on it, the two combine into a combo that blasts everything nearby:
@@ -223,6 +238,8 @@ Free play, layered:
 | Camera | Right-drag, arrow keys, wheel | Drag |
 | Pause | Esc / P | ❚❚ |
 | Mute sound | M | |
+| Aim movement power | Hold V, release to go | Hold the travel button |
+| Photo mode | O | Pause menu |
 
 ## Multiverse Hub (online)
 

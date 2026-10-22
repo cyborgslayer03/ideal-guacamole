@@ -5,7 +5,7 @@ import { emptyUniverse, generateUniverse } from '../core/generator';
 import { legendsUniverse } from '../core/roster';
 import { randomSeed } from '../core/rng';
 import { BundleError, bundleUniverse, parseBundle, universeFromBundle, type Bundle } from '../core/share';
-import { UniverseLibrary, loadSettings, saveSettings, type KeyValueStore, type Settings } from '../core/storage';
+import { UniverseLibrary, loadSettings, saveSettings, type KeyValueStore, type Settings, type UniverseSummary } from '../core/storage';
 import type { Universe } from '../core/types';
 import { bossOptions, planMission, resolveMission, type Mission, type NewsItem } from '../core/campaign';
 import { nextChapterIndex, planChapter, type MissionPlan, type MissionResult } from '../core/missions';
@@ -13,9 +13,11 @@ import { GameSession, type SessionOptions } from '../game/session';
 import type { EditorContext } from './context';
 import { checkbox, field, slider } from './forms';
 import { openPublishDialog, showHub } from './hub';
-import { clear, downloadText, h, pickFile, slug, toast } from './dom';
+import { clear, downloadText, h, pickFile, setChildren, slug, toast } from './dom';
+import { confirmDialog } from './overlay';
 import { modelLibrary } from '../game/models';
 import { audio } from '../game/audio';
+import { dailyChallenge, dailyStreak, todayKey, type DailyRecord } from '../core/daily';
 import { getPreview } from './preview';
 import { charactersTab } from './tabs/characters';
 import { itemsTab } from './tabs/items';
@@ -23,6 +25,8 @@ import { overviewTab } from './tabs/overview';
 import { playTab } from './tabs/play';
 import { storiesTab } from './tabs/stories';
 import { factionsTab, locationsTab } from './tabs/world';
+
+const DAILY_KEY = 'of:daily';
 
 export const GAME_TITLE = 'Omniverse Forge';
 
@@ -73,6 +77,145 @@ export class App {
 
   // --- Home ----------------------------------------------------------------
 
+  // --- Daily Challenge ---------------------------------------------------------
+
+  private dailyRecords(): Record<string, DailyRecord> {
+    try {
+      const raw = JSON.parse(this.kv.getItem(DAILY_KEY) ?? '{}') as Record<string, DailyRecord>;
+      return raw && typeof raw === 'object' ? raw : {};
+    } catch {
+      return {};
+    }
+  }
+
+  private dailySection(): HTMLElement {
+    const today = todayKey();
+    const d = dailyChallenge(today);
+    const hero = d.universe.characters.find((c) => c.id === d.heroId);
+    const bossId = d.plan.phases.find((p) => p.kind === 'bosses');
+    const boss = bossId?.kind === 'bosses' ? d.universe.characters.find((c) => c.id === bossId.bossIds[0]) : undefined;
+    const records = this.dailyRecords();
+    const best = records[today];
+    const streak = dailyStreak(records, today);
+    return h('section', { class: 'library daily' },
+      h('div', { class: 'library-head' },
+        h('h2', { class: 'panel-title' }, `Daily Challenge · ${today}`),
+        streak > 0 && h('span', { class: 'shards' }, `🔥 ${streak}-day streak`),
+      ),
+      h('p', null, h('b', null, hero?.alias ?? 'Hero'), d.plan.allyIds.length ? ` and ${d.plan.allyIds.length} ${d.plan.allyIds.length === 1 ? 'ally' : 'allies'}` : '', ' vs ', h('b', null, boss?.alias ?? 'the boss'), ` · Lv ${d.plan.level}`),
+      h('div', { class: 'row' }, ...d.modifiers.map((m) => h('span', { class: 'bond', style: '--c:#ffc23e', title: m.detail }, m.label))),
+      h('p', { class: 'muted small' }, 'The same mission for everyone today. Faster, cleaner runs score higher. Nothing here touches your own universes.'),
+      h('div', { class: 'row' },
+        h('button', { class: 'btn primary', onclick: () => this.playDaily() }, best ? 'Play again' : '▶ Play today\'s challenge'),
+        best && h('span', null, `Best today: `, h('span', { class: `grade grade-${best.grade}` }, best.grade), ` ${best.score} pts`),
+      ),
+    );
+  }
+
+  private playDaily() {
+    const today = todayKey();
+    const d = dailyChallenge(today);
+    getPreview().stop();
+    this.session?.dispose();
+    clear(this.root);
+    try {
+      this.session = new GameSession({
+        container: this.root,
+        universe: d.universe,
+        characterId: d.heroId,
+        plan: d.plan,
+        bloom: this.settings.bloom,
+        onSave: () => {},
+        onFinish: (r) => {
+          if (r.victory && r.score !== undefined) {
+            const records = this.dailyRecords();
+            const prev = records[today];
+            if (!prev || r.score > prev.score) {
+              records[today] = { score: r.score, grade: r.grade ?? 'C' };
+              this.kv.setItem(DAILY_KEY, JSON.stringify(records));
+              toast(prev ? `New best: ${r.score} points!` : `Daily Challenge complete: ${r.score} points`);
+            } else toast(`${r.score} points. Your best today is ${prev.score}.`);
+          }
+          return null;
+        },
+        onExit: () => {
+          this.session = null;
+          this.showHome();
+        },
+      });
+    } catch (e) {
+      console.error(e);
+      toast('Could not start the game (WebGL unavailable?)', 'error');
+      this.showHome();
+    }
+  }
+
+  /** The saved universes, with delete and a Manage mode for clearing many at once. */
+  private librarySection(universes: UniverseSummary[]): HTMLElement {
+    const section = h('section', { class: 'library' });
+    const selected = new Set<string>();
+    let managing = false;
+    const remove = async (ids: string[]) => {
+      const names = universes.filter((u) => ids.includes(u.id)).map((u) => u.name);
+      const msg = ids.length === 1 ? `Delete “${names[0]}” and its campaign forever?` : `Delete ${ids.length} universes and their campaigns forever? This cannot be undone.`;
+      if (!(await confirmDialog(ids.length === 1 ? 'Delete universe?' : `Delete ${ids.length} universes?`, msg, 'Delete'))) return;
+      for (const id of ids) this.library.remove(id);
+      toast(ids.length === 1 ? `Deleted “${names[0]}”` : `Deleted ${ids.length} universes`);
+      this.showHome();
+    };
+    const render = () => {
+      const toolbar = universes.length > 0 && h('div', { class: 'row library-tools' },
+        managing
+          ? [
+              h('button', { class: 'btn small', onclick: () => (selected.size === universes.length ? selected.clear() : universes.forEach((u) => selected.add(u.id)), render()) },
+                selected.size === universes.length ? 'Select none' : 'Select all'),
+              h('button', { class: 'btn small danger', disabled: !selected.size, onclick: () => void remove([...selected]) }, `Delete selected (${selected.size})`),
+              h('button', { class: 'btn small', onclick: () => ((managing = false), selected.clear(), render()) }, 'Done'),
+            ]
+          : h('button', { class: 'btn small', onclick: () => ((managing = true), render()) }, '☑ Manage'),
+      );
+      setChildren(section,
+        h('div', { class: 'library-head' }, h('h2', { class: 'panel-title' }, `Your Multiverse${universes.length ? ` (${universes.length})` : ''}`), toolbar),
+        universes.length === 0
+          ? h('p', { class: 'muted' }, 'No universes yet. Create your first one above.')
+          : h('div', { class: 'universe-grid' },
+              ...universes.map((s) => {
+                const isSel = selected.has(s.id);
+                return h('div', { class: `universe-card${managing ? ' managing' : ''}${isSel ? ' selected' : ''}`, style: `--c:${s.accent}` },
+                  h('button', {
+                    class: 'universe-open',
+                    onclick: () => {
+                      if (!managing) return this.showEditor(s.id);
+                      if (isSel) selected.delete(s.id);
+                      else selected.add(s.id);
+                      render();
+                    },
+                  },
+                  managing && h('span', { class: 'universe-check' }, isSel ? '☑' : '☐'),
+                  h('div', { class: 'universe-name' }, s.name),
+                  h('div', { class: 'universe-tagline' }, s.tagline || '—'),
+                  h('div', { class: 'universe-meta' }, `${s.characterCount} characters · ${s.storyCount} stories · ${new Date(s.updatedAt).toLocaleDateString()}`),
+                  ),
+                  !managing && h('div', { class: 'universe-actions' },
+                    h('button', {
+                      class: 'icon-btn',
+                      title: 'Export',
+                      onclick: () => {
+                        const u = this.library.load(s.id);
+                        if (u) this.exportBundle(bundleUniverse(u));
+                      },
+                    }, '⇩'),
+                    h('button', { class: 'icon-btn danger-icon', title: 'Delete', onclick: () => void remove([s.id]) }, '🗑'),
+                  ),
+                );
+              }),
+            ),
+      );
+    };
+    render();
+    return section;
+  }
+
   showHome() {
     getPreview().stop();
     clear(this.root);
@@ -117,41 +260,8 @@ export class App {
           ),
           h('p', { class: 'muted small' }, 'Instant rolls a random universe in one click. Legends starts you with twelve hand-made heroes and villains and their story. Blank gives you total control.'),
         ),
-        h('section', { class: 'library' },
-          h('h2', { class: 'panel-title' }, 'Your Multiverse'),
-          universes.length === 0
-            ? h('p', { class: 'muted' }, 'No universes yet. Create your first one above.')
-            : h('div', { class: 'universe-grid' },
-                ...universes.map((s) =>
-                  h('div', { class: 'universe-card', style: `--c:${s.accent}` },
-                    h('button', { class: 'universe-open', onclick: () => this.showEditor(s.id) },
-                      h('div', { class: 'universe-name' }, s.name),
-                      h('div', { class: 'universe-tagline' }, s.tagline || '—'),
-                      h('div', { class: 'universe-meta' }, `${s.characterCount} characters · ${s.storyCount} stories · ${new Date(s.updatedAt).toLocaleDateString()}`),
-                    ),
-                    h('div', { class: 'universe-actions' },
-                      h('button', {
-                        class: 'icon-btn',
-                        title: 'Export',
-                        onclick: () => {
-                          const u = this.library.load(s.id);
-                          if (u) this.exportBundle(bundleUniverse(u));
-                        },
-                      }, '⇩'),
-                      h('button', {
-                        class: 'icon-btn',
-                        title: 'Delete',
-                        onclick: () => {
-                          if (!confirm(`Delete “${s.name}” forever?`)) return;
-                          this.library.remove(s.id);
-                          this.showHome();
-                        },
-                      }, '✕'),
-                    ),
-                  ),
-                ),
-              ),
-        ),
+        this.dailySection(),
+        this.librarySection(universes),
         h('section', { class: 'library hub-cta' },
           h('div', null,
             h('h2', { class: 'panel-title' }, 'Multiverse Hub'),
@@ -388,6 +498,7 @@ export class App {
         characterId,
         ...mission,
         bloom: this.settings.bloom,
+        bonds: Object.fromEntries(Object.entries(this.library.loadCampaign(universe).relations).map(([id, r]) => [id, r.score])),
         onSave: () => this.library.save(universe),
         onExit: () => {
           this.session = null;

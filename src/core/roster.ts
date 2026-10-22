@@ -107,7 +107,7 @@ export const LEGENDS: LegendSpec[] = [
     alias: 'Mindwarden',
     name: 'Dr. Elise Varga',
     role: 'hero',
-    style: 'Telekinetic who lifts foes, controls minds, and blinks across the field',
+    style: 'Telekinetic who lifts foes, controls minds, and opens portals for her team',
     origin: 'A neuroscientist whose mind expanded after a failed consciousness experiment.',
     bio: 'Mindwarden sees every move a second before it happens.',
     stats: s(3, 6, 5, 9, 10, 6),
@@ -117,7 +117,7 @@ export const LEGENDS: LegendSpec[] = [
       { name: 'Mind Quake', kind: 'nova', element: 'psychic', potency: 8, description: 'A psychic scream that stuns everyone nearby.' },
       { name: 'Telekinetic Grip', kind: 'telekinesis', element: 'psychic', potency: 8, description: 'Lifts a foe into the air with a thought and slams them down.' },
       { name: 'Puppet Strings', kind: 'mindcontrol', element: 'psychic', potency: 7, description: 'Takes over a weaker mind and turns it on its friends.' },
-      { name: 'Farsight Shift', kind: 'teleport', element: 'psychic', potency: 6, description: 'Thinks herself somewhere else.' },
+      { name: 'Farsight Gate', kind: 'portal', element: 'psychic', potency: 7, description: 'Opens a doorway to anywhere she can see, and holds it for her team.' },
     ],
   },
   {
@@ -191,7 +191,7 @@ export const LEGENDS: LegendSpec[] = [
       { name: 'Void Rift', kind: 'nova', element: 'shadow', potency: 8, description: 'Tears open space and drinks the life around her.' },
       { name: 'Dark Pact', kind: 'heal', element: 'shadow', potency: 7, description: 'Calls in a favor from the void.' },
       { name: 'Unmake', kind: 'reality', element: 'cosmic', potency: 9, description: 'Rewrites a target: smaller, weaker, or suddenly on her side.' },
-      { name: 'Riftwalk', kind: 'teleport', element: 'cosmic', potency: 9, description: 'Folds space to appear wherever she wishes.' },
+      { name: 'Riftwalk', kind: 'portal', element: 'cosmic', potency: 9, description: 'Folds space into a doorway and steps through.' },
     ],
   },
   {

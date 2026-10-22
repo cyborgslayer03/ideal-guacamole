@@ -89,6 +89,7 @@ const KIND_DAMAGE: Record<PowerKind, number> = {
   superspeed: 0,
   leap: 1.1, // landing slam
   swing: 0,
+  portal: 0,
   optic: 1.1,
   web: 0.5,
   telekinesis: 1.5, // the slam back down
@@ -124,6 +125,7 @@ const KIND_COOLDOWN: Record<PowerKind, number> = {
   superspeed: 0,
   leap: 5,
   swing: 1.2,
+  portal: 8,
   optic: 4,
   web: 6,
   telekinesis: 9,
@@ -149,7 +151,7 @@ export const POWER_LABELS: Record<PowerKind, string> = {
   summon: 'Summon Echoes', drain: 'Life Drain', gravity: 'Gravity Well', storm: 'Storm Call', timestop: 'Time Stop',
   phase: 'Phasing', sonic: 'Sonic Scream', grow: 'Giant Growth', stealth: 'Stealth', stretch: 'Stretch Grab',
   regeneration: 'Healing Factor', flight: 'Flight', teleport: 'Teleport', superspeed: 'Super Speed', leap: 'Super Leap',
-  swing: 'Web Swing',
+  swing: 'Web Swing', portal: 'Portal',
 };
 
 /** One-line explanation of what each power type does in combat. */
@@ -181,6 +183,7 @@ export const POWER_INFO: Record<PowerKind, string> = {
   superspeed: 'Passive: run much faster.',
   leap: 'V to leap and slam down.',
   swing: 'V to swing across the city on a line, even mid-air.',
+  portal: 'V to open a linked pair of portals; you step through, and anyone can follow for a while.',
 };
 
 /** Seconds. Smarter characters recover faster. */
@@ -209,6 +212,22 @@ export function teleportRange(power: Power): number {
 export function regenRate(powers: readonly Power[]): number {
   const p = powers.find((x) => x.kind === 'regeneration');
   return p ? 0.004 + p.potency * 0.0012 : 0;
+}
+
+/** How far each movement power can be aimed, in meters. */
+export function travelRange(power: Power): number {
+  switch (power.kind) {
+    case 'teleport': return teleportRange(power);
+    case 'leap': return 26;
+    case 'swing': return 28;
+    case 'portal': return 24 + power.potency * 1.2;
+    default: return 0;
+  }
+}
+
+/** Seconds a portal pair stays open. */
+export function portalLife(power: Power): number {
+  return 6 + power.potency * 0.6;
 }
 
 /** Radius of a Super Leap's landing slam, in meters. */

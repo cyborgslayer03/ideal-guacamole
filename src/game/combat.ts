@@ -4,7 +4,7 @@
 import * as THREE from 'three';
 import {
   ELEMENT_COLORS, basicDamage, leapSlamRadius, maxEnergy, maxHealth, moveSpeed, powerCooldown, powerCost, powerDamage,
-  regenRate, rollDamage, energyRegen, speedMultiplier, teleportRange,
+  portalLife, regenRate, rollDamage, energyRegen, speedMultiplier, teleportRange, travelRange,
 } from '../core/rules';
 import { EMPTY_LOADOUT, NO_MODS, boostedPower, type Loadout, type PowerMods } from '../core/progression';
 import { isTravel, takesSkillSlot, type Appearance, type Character, type Element, type Power, type Stats } from '../core/types';
@@ -15,8 +15,9 @@ import { createHeroModel } from './models';
 import type { Sfx } from './audio';
 import { COMBO_COOLDOWN, COMBO_WINDOW as TEAM_COMBO_WINDOW, findCombo, type ComboRecipe } from './combos';
 
-export type Team = 'player' | 'enemy';
-export type Archetype = 'hero' | 'ally' | 'grunt' | 'gunner' | 'brute' | 'boss' | 'summon';
+/** 'neutral' is scenery: everyone can smash it, nobody fights it. */
+export type Team = 'player' | 'enemy' | 'neutral';
+export type Archetype = 'hero' | 'ally' | 'grunt' | 'gunner' | 'brute' | 'boss' | 'summon' | 'prop';
 export type SquadRole = 'tank' | 'striker' | 'ranged' | 'support';
 
 /** Seconds a downed hero can wait for a revive. */
@@ -156,8 +157,10 @@ export class Actor {
     readonly character?: Character,
     /** Mastery and gear perks. */
     readonly loadout: Loadout = EMPTY_LOADOUT,
+    /** A custom body (scenery props). */
+    model?: HeroModel,
   ) {
-    this.model = createHeroModel(appearance);
+    this.model = model ?? createHeroModel(appearance);
     this.maxHp = this.hp = healthOverride ?? maxHealth(stats, level);
     this.maxEnergy = this.energy = maxEnergy(stats);
     const sizeBonus = archetype === 'brute' ? 1.4 : archetype === 'boss' ? 1.25 : 1;
@@ -249,6 +252,18 @@ interface Channel {
   drain?: boolean;
 }
 
+/** A linked pair of portals: step into either end to come out of the other. */
+interface PortalPair {
+  ends: [THREE.Vector3, THREE.Vector3];
+  life: number;
+  group: THREE.Group;
+  /** Per-actor re-entry cooldown, so nobody bounces back and forth. */
+  cooldown: Map<Actor, number>;
+}
+
+const portalRing = new THREE.TorusGeometry(1.3, 0.12, 8, 40);
+const portalDisc = new THREE.CircleGeometry(1.25, 32);
+
 /** A lingering area effect (Gravity Well). */
 interface Zone {
   owner: Actor;
@@ -277,6 +292,7 @@ export class Combat {
   private projectiles: Projectile[] = [];
   private channels: Channel[] = [];
   private zones: Zone[] = [];
+  private portals: PortalPair[] = [];
   /** Delayed actions in simulation time, so pausing and slow-mo stay in sync. */
   private timers: { at: number; fn: () => void }[] = [];
   private clock = 0;
@@ -291,6 +307,7 @@ export class Combat {
   onPerfectDodge: (a: Actor) => void = () => {};
   /** Sound cues; the session turns them into audio positioned around the camera. */
   onSound: (name: Sfx, pos: THREE.Vector3, element?: Element) => void = () => {};
+  onPropBroken: (prop: Actor, by: Actor | null) => void = () => {};
   /** A team combo went off: `first` set it up, `second` finished it. */
   onCombo: (recipe: ComboRecipe, first: Actor, second: Actor, at: THREE.Vector3) => void = () => {};
 
@@ -331,12 +348,17 @@ export class Combat {
     return this.actors.filter((a) => a.alive && a.team !== actor.team && a.stealth <= 0);
   }
 
+  /** Enemies worth fighting: everything hittable except scenery. */
+  foesOf(actor: Actor): Actor[] {
+    return this.enemiesOf(actor).filter((a) => a.archetype !== 'prop');
+  }
+
   /** Nearest enemy within range, preferring ones in front of the actor. */
   findTarget(actor: Actor, range: number): Actor | null {
     const fwd = actor.forward();
     let best: Actor | null = null;
     let bestScore = Infinity;
-    for (const other of this.enemiesOf(actor)) {
+    for (const other of this.foesOf(actor)) {
       const d = other.pos.distanceTo(actor.pos);
       if (d > range) continue;
       const dir = other.pos.clone().sub(actor.pos).setY(0).normalize();
@@ -370,9 +392,12 @@ export class Combat {
     return true;
   }
 
-  /** The travel button: toggles flight, blinks a teleporter, or launches a leap. */
-  /** `preferred` lets AI aim a teleport or leap at the enemy it chose, not just the nearest. */
-  travel(a: Actor, preferred: Actor | null = null): boolean {
+  /**
+   * The travel button: toggles flight, blinks a teleporter, launches a leap or
+   * swing, or opens a portal. `preferred` lets AI aim at the enemy it chose;
+   * `aim` is a spot the player picked by hand (hold V to aim).
+   */
+  travel(a: Actor, preferred: Actor | null = null, aim: THREE.Vector3 | null = null): boolean {
     const p = a.travel;
     if (!p || !a.alive || a.stun > 0) return false;
     if (p.kind === 'flight') {
@@ -380,21 +405,27 @@ export class Combat {
       return true;
     }
     if (a.travelRemaining > 0 || a.castTimer > 0 || a.root > 0) return false;
-    const ok = p.kind === 'teleport' ? this.teleport(a, p, preferred) : p.kind === 'swing' ? this.swing(a, p, preferred) : this.superLeap(a, p, preferred);
+    const ok = p.kind === 'teleport' ? this.teleport(a, p, preferred, aim)
+      : p.kind === 'swing' ? this.swing(a, p, preferred, aim)
+      : p.kind === 'portal' ? this.openPortal(a, p, preferred, aim)
+      : this.superLeap(a, p, preferred, aim);
     if (ok) a.travelRemaining = a.travelCooldown;
     return ok;
   }
 
   /** Blink toward the target (or the way you're moving) and shock whoever is near the landing spot. */
-  private teleport(a: Actor, p: Power, preferred: Actor | null): boolean {
+  private teleport(a: Actor, p: Power, preferred: Actor | null, aim: THREE.Vector3 | null = null): boolean {
     const color = ELEMENT_COLORS[p.element];
     const range = teleportRange(p);
     // A chosen target out of reach means "blink toward it" (along the steering direction).
-    const target = preferred ? (preferred.pos.distanceTo(a.pos) <= range + 6 ? preferred : null) : this.findTarget(a, range + 6);
+    const target = aim ? null : preferred ? (preferred.pos.distanceTo(a.pos) <= range + 6 ? preferred : null) : this.findTarget(a, range + 6);
     const from = a.pos.clone();
     const to = new THREE.Vector3();
-    // The player steers a blink with the stick; AI (and an idle player) blink to the target.
-    if (target && !a.ai.flee && (a.archetype !== 'hero' || a.moveIntent.lengthSq() < 0.01)) {
+    if (aim) {
+      to.copy(aim);
+      a.faceToward(aim);
+    } else if (target && !a.ai.flee && (a.archetype !== 'hero' || a.moveIntent.lengthSq() < 0.01)) {
+      // The player steers a blink with the stick; AI (and an idle player) blink to the target.
       // Appear just beside the target, on the side we came from.
       const away = from.clone().sub(target.pos).setY(0);
       if (away.lengthSq() < 1e-4) away.set(0, 0, 1);
@@ -428,14 +459,14 @@ export class Combat {
   }
 
   /** A long arcing jump toward the target that slams down on landing. */
-  private superLeap(a: Actor, p: Power, preferred: Actor | null): boolean {
+  private superLeap(a: Actor, p: Power, preferred: Actor | null, aim: THREE.Vector3 | null = null): boolean {
     if (!a.grounded || a.flying) return false;
-    const target = a.ai.flee ? null : preferred ? (preferred.pos.distanceTo(a.pos) <= 26 ? preferred : null) : this.findTarget(a, 26);
+    const target = aim || a.ai.flee ? null : preferred ? (preferred.pos.distanceTo(a.pos) <= 26 ? preferred : null) : this.findTarget(a, 26);
     const flightTime = 0.9;
-    const dest = target
+    const dest = aim ? aim.clone() : target
       ? target.pos.clone()
       : a.pos.clone().addScaledVector(a.moveIntent.lengthSq() > 0.01 ? a.moveIntent.clone().setY(0).normalize() : a.forward(), 14);
-    if (!target) dest.y = this.floorAt(dest.x, dest.z, a.pos.y + 4);
+    if (!target && !aim) dest.y = this.floorAt(dest.x, dest.z, a.pos.y + 4);
     this.keepInBounds(dest, a.radius);
     a.faceToward(dest);
     // Ballistic arc that lands at the destination's height (a rooftop, the skydeck, or the ground).
@@ -461,15 +492,15 @@ export class Combat {
    * Web Swing: shoot a line to an anchor high above and swing in an arc toward
    * the target (or the way you're heading). Works mid-air, so swings chain.
    */
-  private swing(a: Actor, p: Power, preferred: Actor | null): boolean {
+  private swing(a: Actor, p: Power, preferred: Actor | null, aim: THREE.Vector3 | null = null): boolean {
     if (a.flying) return false;
-    const target = a.ai.flee ? null : preferred ? (preferred.pos.distanceTo(a.pos) <= 28 ? preferred : null) : this.findTarget(a, 28);
+    const target = aim || a.ai.flee ? null : preferred ? (preferred.pos.distanceTo(a.pos) <= 28 ? preferred : null) : this.findTarget(a, 28);
     const dir = a.moveIntent.lengthSq() > 0.01 && (a.archetype === 'hero' || !target) ? a.moveIntent.clone().setY(0).normalize() : a.forward();
-    const dest = target
+    const dest = aim ? aim.clone() : target
       ? target.pos.clone().addScaledVector(a.pos.clone().sub(target.pos).setY(0).normalize(), target.radius + a.radius + 1.5)
       : a.pos.clone().addScaledVector(dir, 18);
-    // Prefer landing up on rooftops and platforms along the way.
-    dest.y = this.floorAt(dest.x, dest.z, Math.max(a.pos.y, dest.y) + 6);
+    // Prefer landing up on rooftops and platforms along the way (an aimed spot is exact).
+    if (!aim) dest.y = this.floorAt(dest.x, dest.z, Math.max(a.pos.y, dest.y) + 6);
     this.keepInBounds(dest, a.radius);
     a.faceToward(dest);
     const anchor = a.pos.clone().lerp(dest, 0.55).setY(Math.max(a.pos.y, dest.y) + 12);
@@ -487,6 +518,85 @@ export class Combat {
     this.fx.burst(anchor, color, 6, 2, 0.1);
     this.sound('webline', a.pos, p.element);
     return true;
+  }
+
+  /** Opens a portal at your feet and another at the destination, and steps through. */
+  private openPortal(a: Actor, p: Power, preferred: Actor | null, aim: THREE.Vector3 | null): boolean {
+    const range = travelRange(p);
+    let to: THREE.Vector3;
+    if (aim) to = aim.clone();
+    else {
+      const target = a.ai.flee ? null : preferred ? (preferred.pos.distanceTo(a.pos) <= range ? preferred : null) : this.findTarget(a, range);
+      if (target) {
+        const away = a.pos.clone().sub(target.pos).setY(0).normalize();
+        to = target.pos.clone().addScaledVector(away, target.radius + a.radius + 2);
+      } else {
+        const dir = a.moveIntent.lengthSq() > 0.01 ? a.moveIntent.clone().setY(0).normalize() : a.forward();
+        to = a.pos.clone().addScaledVector(dir, range * 0.7);
+        to.y = this.floorAt(to.x, to.z, a.pos.y + 4);
+      }
+    }
+    this.keepInBounds(to, a.radius);
+    const from = a.pos.clone();
+    if (from.distanceTo(to) < 3) return false;
+    const color = ELEMENT_COLORS[p.element];
+    const group = new THREE.Group();
+    const facing = Math.atan2(to.x - from.x, to.z - from.z);
+    for (const end of [from, to]) {
+      const ring = new THREE.Mesh(portalRing, new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.95, blending: THREE.AdditiveBlending, depthWrite: false }));
+      const disc = new THREE.Mesh(portalDisc, new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.28, side: THREE.DoubleSide, blending: THREE.AdditiveBlending, depthWrite: false }));
+      for (const m of [ring, disc]) {
+        m.position.set(end.x, end.y + 1.4, end.z);
+        m.rotation.y = facing;
+        group.add(m);
+      }
+    }
+    this.scene.add(group);
+    const pair: PortalPair = { ends: [from, to], life: portalLife(p), group, cooldown: new Map([[a, 1.2]]) };
+    this.portals.push(pair);
+    this.fx.flare(from.clone().setY(from.y + 1.4), color, 2, 0.35);
+    this.fx.flare(to.clone().setY(to.y + 1.4), color, 2, 0.35);
+    this.sound('teleport', from, p.element);
+    a.pos.copy(to).addScaledVector(new THREE.Vector3(Math.sin(facing), 0, Math.cos(facing)), 1.4);
+    a.vel.set(0, 0, 0);
+    a.facing = facing;
+    a.invuln = Math.max(a.invuln, 0.3);
+    return true;
+  }
+
+  private updatePortals(dt: number) {
+    for (let i = this.portals.length - 1; i >= 0; i--) {
+      const pair = this.portals[i];
+      pair.life -= dt;
+      const fade = Math.min(1, pair.life / 0.6);
+      pair.group.children.forEach((m, k) => {
+        if (k % 2 === 0) m.rotation.z += dt * 2;
+        const mat = (m as THREE.Mesh).material as THREE.MeshBasicMaterial;
+        mat.opacity = (k % 2 === 0 ? 0.95 : 0.28) * fade;
+      });
+      for (const [who, t] of pair.cooldown) pair.cooldown.set(who, t - dt);
+      for (const a of this.actors) {
+        if (!a.alive || a.archetype === 'prop' || (pair.cooldown.get(a) ?? 0) > 0) continue;
+        for (let e = 0; e < 2; e++) {
+          const end = pair.ends[e];
+          if (Math.hypot(a.pos.x - end.x, a.pos.z - end.z) > 1.3 || Math.abs(a.pos.y - end.y) > 2) continue;
+          const exit = pair.ends[1 - e];
+          const out = exit.clone().sub(end).setY(0).normalize();
+          a.pos.copy(exit).addScaledVector(out, 1.4);
+          a.vel.set(0, Math.max(0, a.vel.y), 0);
+          a.faceToward(a.pos.clone().add(out));
+          pair.cooldown.set(a, 1.5);
+          this.fx.burst(a.center, '#ffffff', 10, 4, 0.12);
+          this.sound('teleport', a.pos);
+          break;
+        }
+      }
+      if (pair.life <= 0) {
+        this.scene.remove(pair.group);
+        pair.group.children.forEach((m) => ((m as THREE.Mesh).material as THREE.Material).dispose());
+        this.portals.splice(i, 1);
+      }
+    }
   }
 
   private landLeap(a: Actor) {
@@ -752,6 +862,12 @@ export class Combat {
         const t = inRange(24);
         a.castTimer = 0.5;
         if (!t) break;
+        // Scenery nearby? Throw it at them instead.
+        const prop = this.actors.find((x) => x.alive && x.archetype === 'prop' && x.pos.distanceTo(a.pos) < 14);
+        if (prop) {
+          this.hurl(a, prop, t, dmg * 1.8, p);
+          break;
+        }
         this.fx.beam(a.center, t.center, color, 0.08, 0.5);
         if (boss(t) || t.archetype === 'brute') {
           // Too heavy to lift: crush in place.
@@ -834,7 +950,7 @@ export class Combat {
         for (let i = 0; i < strikes; i++) {
           this.schedule(0.2 + i * 0.3, () => {
             if (!a.alive) return;
-            const foes = this.enemiesOf(a).filter((e) => e.pos.distanceTo(a.pos) < 22);
+            const foes = this.foesOf(a).filter((e) => e.pos.distanceTo(a.pos) < 22);
             const victim = foes[Math.floor(Math.random() * foes.length)];
             const at = victim ? victim.pos.clone() : a.pos.clone().add(new THREE.Vector3(Math.random() * 16 - 8, 0, Math.random() * 16 - 8));
             this.fx.beam(at.clone().setY(at.y + 22), at, color, 0.25, 0.2);
@@ -937,6 +1053,25 @@ export class Combat {
     }
   }
 
+  /** Telekinetic throw: a prop rises, then flies at the target and shatters. */
+  private hurl(a: Actor, prop: Actor, target: Actor, raw: number, p: Power) {
+    const color = ELEMENT_COLORS[p.element];
+    this.fx.beam(a.center, prop.center, color, 0.08, 0.5);
+    prop.lift = 0.45;
+    prop.liftHeight = prop.pos.y + 2.5;
+    this.schedule(0.45, () => {
+      if (!prop.alive) return;
+      const from = prop.center;
+      const aimAt = target.alive ? target.center : from.clone().addScaledVector(a.forward(), 10);
+      const dir = aimAt.sub(from).normalize();
+      this.fireProjectile(a, dir, raw, p.element, 30, 0.7, 3.5, 0, p, from);
+      prop.hp = 0;
+      prop.alive = false;
+      this.fx.burst(from, '#c8b090', 12, 5);
+      this.schedule(0.05, () => this.remove(prop));
+    });
+  }
+
   /** Mind control: the target fights for the caster's team for a while. */
   charm(t: Actor, by: Actor, seconds: number) {
     t.team = by.team;
@@ -990,7 +1125,7 @@ export class Combat {
     return true;
   }
 
-  fireProjectile(owner: Actor, dir: THREE.Vector3, damage: number, element: Element, speed: number, size: number, aoe = 0, web = 0, power?: Power) {
+  fireProjectile(owner: Actor, dir: THREE.Vector3, damage: number, element: Element, speed: number, size: number, aoe = 0, web = 0, power?: Power, origin?: THREE.Vector3) {
     const color = ELEMENT_COLORS[element];
     const mat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.95, blending: THREE.AdditiveBlending, depthWrite: false });
     const mesh = new THREE.Mesh(projectileGeo, mat);
@@ -999,7 +1134,8 @@ export class Combat {
     (glow.material as THREE.MeshBasicMaterial).opacity = 0.3;
     glow.scale.setScalar(2.2);
     mesh.add(glow);
-    mesh.position.copy(owner.center).addScaledVector(owner.forward(), 0.8);
+    if (origin) mesh.position.copy(origin);
+    else mesh.position.copy(owner.center).addScaledVector(owner.forward(), 0.8);
     this.scene.add(mesh);
     this.projectiles.push({
       owner,
@@ -1077,7 +1213,7 @@ export class Combat {
 
     if (source) {
       if (source.archetype === 'hero') source.ultimate = Math.min(100, source.ultimate + (dealt * source.loadout.ultCharge) / (basicDamage(source.stats, source.level) * 0.3));
-      if (source.loadout.lifesteal > 0 && source !== target) this.heal(source, dealt * source.loadout.lifesteal);
+      if (source.loadout.lifesteal > 0 && source !== target && target.archetype !== 'prop') this.heal(source, dealt * source.loadout.lifesteal);
       if (element === 'shadow' || element === 'nature') this.heal(source, dealt * 0.15);
       if (element === 'energy') source.energy = Math.min(source.maxEnergy, source.energy + 4);
     }
@@ -1090,6 +1226,7 @@ export class Combat {
     if (element === 'lightning' || element === 'psychic') target.stun = Math.max(target.stun, isBoss ? 0.15 : 0.5);
     if (element === 'kinetic') knockback *= 1.6;
 
+    if (target.archetype === 'prop') knockback *= target.radius > 1.2 ? 0.3 : 0.8;
     if (knockback > 0 && source && !isBoss && target.archetype !== 'brute' && target.growth <= 0 && target.frozen <= 0) {
       const dir = target.pos.clone().sub(source.pos).setY(0).normalize();
       target.vel.x += dir.x * knockback;
@@ -1099,7 +1236,7 @@ export class Combat {
       target.attackTimer = 0;
     }
 
-    if (via && source && target.hp > 0) this.comboCheck(target, source, via);
+    if (via && source && target.hp > 0 && target.archetype !== 'prop') this.comboCheck(target, source, via);
     if (target.hp <= 0) this.kill(target, source);
     return dealt;
   }
@@ -1150,6 +1287,10 @@ export class Combat {
       target.charm = 0;
       target.team = target.homeTeam;
     }
+    if (target.archetype === 'prop') {
+      this.smash(target, source);
+      return;
+    }
     // Echoes just fade; they never count as kills or losses.
     if (target.summoned) {
       this.schedule(0.5, () => this.remove(target));
@@ -1165,6 +1306,24 @@ export class Combat {
       return;
     }
     this.onKill(target, source);
+  }
+
+  /** Scenery breaks apart; fuel barrels explode, hurting the smasher's enemies. */
+  private smash(prop: Actor, source: Actor | null) {
+    this.fx.burst(prop.center, '#c8b090', 26, 9, 0.18);
+    this.sound('explosion', prop.pos);
+    if (prop.ai.explosive) {
+      this.fx.flare(prop.center, '#ff6a1f', 4, 0.5);
+      this.fx.ring(prop.pos, '#ff6a1f', 5.5, 0.5);
+      this.fx.shake(0.5);
+      const raw = 260 * this.powerScale;
+      for (const e of this.actors) {
+        if (!e.alive || e === prop || (source && e.team === source.team) || e.pos.distanceTo(prop.pos) > 5 + e.radius) continue;
+        this.damage(e, raw, source, 'fire', 12);
+      }
+    }
+    this.onPropBroken(prop, source);
+    this.schedule(0.05, () => this.remove(prop));
   }
 
   /** Living heroes and allies on the actor's team (the actor included). */
@@ -1241,6 +1400,7 @@ export class Combat {
     this.updateProjectiles(dt);
     this.updateChannels(dt);
     this.updateZones(dt);
+    this.updatePortals(dt);
   }
 
   private updateActor(a: Actor, dt: number) {
@@ -1463,13 +1623,15 @@ export class Combat {
         const d = Math.hypot(dx, dz);
         const min = a.radius + b.radius;
         if (d < min && d > 1e-4) {
-          const push = (min - d) / 2;
+          // Scenery doesn't get shoved around by bodies; it shoves back.
+          const wa = a.archetype === 'prop' ? 0 : b.archetype === 'prop' ? 1 : 0.5;
+          const push = min - d;
           const nx = dx / d;
           const nz = dz / d;
-          a.pos.x -= nx * push;
-          a.pos.z -= nz * push;
-          b.pos.x += nx * push;
-          b.pos.z += nz * push;
+          a.pos.x -= nx * push * wa;
+          a.pos.z -= nz * push * wa;
+          b.pos.x += nx * push * (1 - wa);
+          b.pos.z += nz * push * (1 - wa);
         }
       }
     }
@@ -1588,6 +1750,8 @@ export class Combat {
 
   clear() {
     this.zones = [];
+    for (const pair of this.portals) this.scene.remove(pair.group);
+    this.portals = [];
     for (const p of this.projectiles) {
       this.scene.remove(p.mesh);
       (p.mesh.material as THREE.Material).dispose();

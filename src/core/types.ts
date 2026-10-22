@@ -19,12 +19,12 @@ export const POWER_KINDS = [
   'blast', 'beam', 'nova', 'dash', 'shield', 'heal',
   'optic', 'web', 'telekinesis', 'reality', 'mindcontrol', 'summon', 'drain', 'gravity', 'storm', 'timestop',
   'phase', 'sonic', 'grow', 'stealth', 'stretch', 'regeneration',
-  'flight', 'teleport', 'superspeed', 'leap', 'swing',
+  'flight', 'teleport', 'superspeed', 'leap', 'swing', 'portal',
 ] as const;
 export type PowerKind = (typeof POWER_KINDS)[number];
 
 /** Movement powers: used on the travel button (or passive), never on Q/E/R/F. */
-export const MOVEMENT_KINDS = ['flight', 'teleport', 'superspeed', 'leap', 'swing'] as const;
+export const MOVEMENT_KINDS = ['flight', 'teleport', 'superspeed', 'leap', 'swing', 'portal'] as const;
 export type MovementKind = (typeof MOVEMENT_KINDS)[number];
 
 export function isMovement(kind: PowerKind): kind is MovementKind {
@@ -32,7 +32,7 @@ export function isMovement(kind: PowerKind): kind is MovementKind {
 }
 
 /** Movement on the travel button (Super Speed is passive, so it isn't one). */
-export const TRAVEL_KINDS = ['flight', 'teleport', 'leap', 'swing'] as const;
+export const TRAVEL_KINDS = ['flight', 'teleport', 'leap', 'swing', 'portal'] as const;
 
 export function isTravel(kind: PowerKind): boolean {
   return (TRAVEL_KINDS as readonly string[]).includes(kind);

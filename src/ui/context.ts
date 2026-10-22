@@ -4,6 +4,7 @@ import type { Universe } from '../core/types';
 import { normalizeUniverse } from '../core/validate';
 import type { Campaign, Mission, NewsItem } from '../core/campaign';
 import { h, type Child } from './dom';
+import { confirmDialog } from './overlay';
 
 export interface EditorContext {
   universe: Universe;
@@ -93,8 +94,8 @@ export function listDetail<T extends { id: string }>(ctx: EditorContext, o: List
 export function deleteButton(ctx: EditorContext, noun: string, onDelete: () => void): HTMLElement {
   return h('button', {
     class: 'btn danger',
-    onclick: () => {
-      if (!confirm(`Delete this ${noun}? This cannot be undone.`)) return;
+    onclick: async () => {
+      if (!(await confirmDialog(`Delete ${noun}?`, `Delete this ${noun}? This cannot be undone.`, 'Delete'))) return;
       onDelete();
       repairReferences(ctx);
       ctx.changed();

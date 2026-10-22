@@ -87,7 +87,7 @@ function flee(e: Actor, combat: Combat, dt: number, target: Actor, dist: number)
 export function updateEnemy(e: Actor, combat: Combat, dt: number) {
   e.moveIntent.set(0, 0, 0);
   if (!e.alive) return;
-  const target = combat.enemiesOf(e).sort((a, b) => a.pos.distanceTo(e.pos) - b.pos.distanceTo(e.pos))[0];
+  const target = combat.foesOf(e).sort((a, b) => a.pos.distanceTo(e.pos) - b.pos.distanceTo(e.pos))[0];
   if (!target) return;
   const dist = Math.hypot(target.pos.x - e.pos.x, target.pos.z - e.pos.z);
   const gap = dist - e.radius - target.radius;
@@ -234,7 +234,7 @@ function chooseTarget(a: Actor, combat: Combat, role: SquadRole, ctx: SquadConte
   const anchor = ctx.order === 'hold' && ctx.holdAt ? ctx.holdAt : ctx.order === 'follow' ? leader.pos : a.pos;
   const reach = ctx.order === 'follow' ? 6 : ctx.order === 'hold' ? 12 : 28;
   const squad = combat.squadOf(a);
-  const enemies = combat.enemiesOf(a).filter((e) => e.pos.distanceTo(anchor) <= reach);
+  const enemies = combat.foesOf(a).filter((e) => e.pos.distanceTo(anchor) <= reach);
   if (!enemies.length) return null;
   const score = (e: Actor) => {
     let s = e.pos.distanceTo(a.pos);
@@ -261,7 +261,7 @@ export function updateAlly(a: Actor, combat: Combat, dt: number, leader: Actor, 
   if (!a.alive) return;
   const role = (a.squadRole ??= squadRole(a));
   const squad = combat.squadOf(a);
-  const threatNear = combat.enemiesOf(a).some((e) => e.pos.distanceTo(a.pos) < 3.5);
+  const threatNear = combat.foesOf(a).some((e) => e.pos.distanceTo(a.pos) < 3.5);
 
   // 1. Revive anyone down nearby (the leader first).
   const downed = combat.actors

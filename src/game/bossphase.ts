@@ -108,7 +108,7 @@ export class BossDirector {
     if (boss.ai.hazard > 0) return;
     const phase = BOSS_PHASES[Math.max(0, (boss.ai.bossPhase ?? 1) - 1)];
     boss.ai.hazard = phase.hazardEvery;
-    const targets = this.combat.enemiesOf(boss).filter((e) => e.pos.distanceTo(boss.pos) < 45);
+    const targets = this.combat.foesOf(boss).filter((e) => e.pos.distanceTo(boss.pos) < 45);
     if (!targets.length) return;
     const victim = targets[Math.floor(Math.random() * targets.length)];
     const element = boss.skills[0]?.power.element ?? 'kinetic';

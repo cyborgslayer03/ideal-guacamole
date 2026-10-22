@@ -11,21 +11,23 @@ import { randomLocation } from '../core/generator';
 import { gradeRun, parTime, type BossOption, type BossOutcome, type MissionPlan, type MissionResult, type PatrolEvent, type Phase } from '../core/missions';
 import { Rng } from '../core/rng';
 import {
-  RARITY_COLORS, THREAT_TIERS, basicDamage, effectiveStats, grantXp, maxHealth, minionHealth, minionStats, resolveRules, tierById, xpReward,
+  ELEMENT_COLORS, RARITY_COLORS, THREAT_TIERS, travelRange, basicDamage, effectiveStats, grantXp, maxHealth, minionHealth, minionStats, resolveRules, tierById, xpReward,
   type RuleKey, type ThreatTier,
 } from '../core/rules';
 import type { Appearance, Character, Element, Location, Universe, UniverseRules } from '../core/types';
 import { AmbientDirector, type AmbientHost } from './ambient';
 import { h } from '../ui/dom';
 import { updateAlly, updateEnemy, type SquadContext, type SquadOrder } from './ai';
-import { ARENA_RADIUS, buildArena, type Arena } from './arena';
+import { ARENA_RADIUS, aimPoint, buildArena, type AimResult, type Arena } from './arena';
 import { Actor, Combat } from './combat';
 import { audio, type Intensity, type Sfx } from './audio';
 import { BossDirector } from './bossphase';
+import { scatterProps } from './props';
+import { banterLine, type BanterEvent } from '../core/banter';
 import { loadoutFor, masteryUnlocked } from '../core/progression';
 import { Effects } from './effects';
 import { Hud } from './hud';
-import { Input } from './input';
+import { AIM_HOLD, Input } from './input';
 
 export interface SessionOptions {
   container: HTMLElement;
@@ -42,6 +44,8 @@ export interface SessionOptions {
   /** Called whenever progress (XP, levels, rewards) should be persisted. */
   onSave: () => void;
   onExit: () => void;
+  /** Relationship scores by character id (campaign), which set the tone of squad banter. */
+  bonds?: Record<string, number>;
 }
 
 type Minion = 'grunt' | 'gunner' | 'brute';
@@ -125,6 +129,15 @@ export class GameSession {
   /** Friendly characters fighting alongside for a while (ambient distress calls). */
   private helpers: Actor[] = [];
   private musicTimer = 0;
+  private aiming = false;
+  /** Finisher camera: a slow orbit around the last blow. */
+  private cine: { focus: THREE.Vector3; t: number; duration: number; yaw: number } | null = null;
+  private finisherCooldown = 0;
+  private banterCooldown = 0;
+  private lowHpCooldown = 0;
+  private photo: { bar: HTMLElement; caption: HTMLElement; halftone: HTMLElement; filter: PhotoFilter; text: string } | null = null;
+  private aimAt: AimResult | null = null;
+  private aimMarker: { group: THREE.Group; ring: THREE.Mesh; arc: THREE.Line; mat: THREE.MeshBasicMaterial } | null = null;
   private portals: { group: THREE.Group; pos: THREE.Vector3; location: Location }[] = [];
   private travelling = false;
   private feedTimer = 0;
@@ -199,6 +212,8 @@ export class GameSession {
     this.resolveStageRules(location);
     combat.powerScale = this.rules.powerScale;
     combat.gravityScale = this.rules.gravity;
+    // Smashable scenery: cars, crates, and fuel barrels.
+    for (const prop of scatterProps(u.seed ^ hashString(location.id) ^ 0x5eed, location.biome, arena.obstacles)) combat.add(prop);
 
     const c = this.character;
     const player = new Actor(c.alias, 'player', 'hero', effectiveStats(c, u.items), c.level, c.appearance, c.powers, undefined, c, loadoutFor(c, u.items));
@@ -224,6 +239,10 @@ export class GameSession {
       if (!st) return;
       const controlled = st.player;
       const kind = e.heal ? 'heal' : e.target === controlled ? 'taken' : e.crit ? 'crit' : 'normal';
+      if (e.target.archetype === 'prop') {
+        if (e.source === controlled) hud.addCombo();
+        return;
+      }
       hud.damageNumber(e.target.center.add(new THREE.Vector3(0, 0.6, 0)), this.camera, e.amount, kind);
       if (e.heal) return;
       if (e.source === controlled) {
@@ -238,15 +257,26 @@ export class GameSession {
         hud.teamGauge = Math.min(100, hud.teamGauge + (e.amount / (basicDamage(controlled.stats, controlled.level) * 0.9)));
       }
     };
-    combat.onKill = (target) => this.onKill(target);
+    combat.onKill = (target, killer) => this.onKill(target, killer);
+    combat.onPropBroken = (_prop, by) => {
+      if (by === this.stage?.player && Math.random() < 0.25) this.say('prop');
+    };
     combat.onDowned = (a) => this.onDowned(a);
-    combat.onRevived = (a, by) => this.stage?.hud.banner(`${a.name} is back up`, by ? `Revived by ${by.name}` : '', 1.6);
+    combat.onRevived = (a, by) => {
+      this.stage?.hud.banner(`${a.name} is back up`, by ? `Revived by ${by.name}` : '', 1.6);
+      if (by && by !== this.stage?.player) this.say('revive', a, by);
+    };
     combat.onSound = (name, pos, element) => this.playSound(name, pos, element);
     combat.onCombo = (recipe, first, second) => {
       if (this.run) this.run.combos++;
       hud.teamGauge = Math.min(100, hud.teamGauge + 25);
       this.hitstop = Math.max(this.hitstop, 0.08);
-      if (first.team === 'player') hud.banner(`Combo! ${recipe.name}`, `${first.name} + ${second.name}`, 1.4);
+      if (first.team === 'player') {
+        hud.banner(`Combo! ${recipe.name}`, `${first.name} + ${second.name}`, 1.4);
+        const st = this.stage;
+        const speaker = [first, second].find((x) => st?.allies.includes(x));
+        if (speaker) this.say('combo', speaker === first ? second : first, speaker);
+      }
     };
     combat.onPerfectDodge = (a) => {
       if (a !== this.stage?.player) return;
@@ -268,6 +298,7 @@ export class GameSession {
         st.hud.banner(`${boss.name} ${phase.subtitle}`, `${detail} · Watch for the warning circles!`, 2.2);
         st.hud.refreshBoss(boss);
         this.slowmo = Math.max(this.slowmo, 0.7);
+        this.say('enrage');
       },
     });
     this.stage = { arena, combat, fx, player, allies, hud, location, bosses };
@@ -408,6 +439,7 @@ export class GameSession {
     const run = this.run;
     s.hud.setObjective('');
     audio().play('banner');
+    s.combat.schedule(6, () => this.say(plan.title.startsWith('Stop the') ? 'scheme' : 'start'));
     s.hud.banner(plan.title, plan.teamName ? `${plan.teamName} assemble!` : plan.subtitle, 2.6);
     this.paused = true;
     await wait(1200);
@@ -698,7 +730,7 @@ export class GameSession {
     this.opts.onSave();
 
     const squadIds = [s.player, ...s.allies].map((a) => a.character?.id).filter((id): id is string => !!id && id !== this.character.id);
-    const result: MissionResult = { victory: true, defeatedBossIds: r.defeated, survivingBossIds: [], outcomes, choice, ambient, grade: graded.grade, squadIds, combos: r.combos };
+    const result: MissionResult = { victory: true, defeatedBossIds: r.defeated, survivingBossIds: [], outcomes, choice, ambient, grade: graded.grade, squadIds, combos: r.combos, score: graded.score };
     s.hud.modal(
       'Mission Complete',
       h('div', { class: 'rewards' },
@@ -719,10 +751,11 @@ export class GameSession {
     else this.exit();
   }
 
-  private onKill(target: Actor) {
+  private onKill(target: Actor, killer: Actor | null = null) {
     const s = this.stage;
     const r = this.run;
     if (!s) return;
+    this.maybeFinisher(s, target, killer);
     const inSquad = target === s.player || s.allies.includes(target);
     if (inSquad) {
       // A squad member bled out. The mission goes on while anyone can still fight.
@@ -741,6 +774,7 @@ export class GameSession {
     }
     if (target.archetype === 'boss') {
       this.slowmo = 1;
+      this.say('bossDown');
       if (r && target.character && !r.defeated.includes(target.character.id)) r.defeated.push(target.character.id);
       this.refreshBossBar();
     } else if (r) r.killed++;
@@ -756,6 +790,7 @@ export class GameSession {
     if (!s) return;
     if (this.run) this.run.downs++;
     s.hud.banner(`${a.name} is down!`, 'A teammate can revive them', 1.6);
+    this.say('down', a, s.allies.find((x) => x !== a && x.alive));
     if (a !== s.player) return;
     const next = s.allies.find((x) => x.alive);
     if (next) setTimeout(() => this.stage === s && s.player === a && !a.alive && this.swapHero(next), 900);
@@ -1234,6 +1269,7 @@ export class GameSession {
   private togglePause() {
     const s = this.stage;
     if (!s || this.run?.done) return;
+    this.input.cancelTravel();
     if (this.paused) {
       this.paused = false;
       s.hud.modal('', null, []);
@@ -1245,10 +1281,12 @@ export class GameSession {
       h('p', null, 'J / click — combo attack · Shift — dodge'),
       h('p', null, 'Q E R F — powers · X — ultimate'),
       h('p', null, 'V — movement power: toggle flight (Space/C rise/fall), teleport, super leap, or web swing'),
-      h('p', null, 'Right-drag or arrow keys — camera · Wheel — zoom · M — mute'),
+      h('p', null, 'Right-drag or arrow keys — camera · Wheel — zoom · M — mute · O — photo mode'),
+      h('p', null, 'Hold V to aim your movement power, release to go'),
       this.run && h('p', null, 'Abandoning a mission leaves the world unchanged.'),
     ), [
       { label: 'Resume', primary: true, onClick: () => this.togglePause() },
+      { label: '📷 Photo mode', onClick: () => this.togglePhoto() },
       { label: this.run ? 'Abandon' : 'Exit', onClick: () => this.exit() },
     ]);
   }
@@ -1259,6 +1297,7 @@ export class GameSession {
     const realDt = Math.min(0.05, (now - this.last) / 1000);
     this.last = now;
     if (this.input.consume('pause')) this.togglePause();
+    if (this.input.consume('photo')) this.togglePhoto();
     if (this.input.consume('mute')) {
       const muted = audio().toggleMute();
       this.stage?.hud.banner(muted ? 'Sound off' : 'Sound on', 'M to toggle', 0.9);
@@ -1267,7 +1306,15 @@ export class GameSession {
     const s = this.stage;
     if (!s) return;
 
-    let dt = this.paused ? 0 : realDt * this.timeScale;
+    // Aiming a movement power slows time, like a focus mode.
+    let dt = this.paused || this.photo ? 0 : realDt * this.timeScale * (this.aiming ? 0.35 : 1);
+    this.finisherCooldown -= realDt;
+    this.banterCooldown -= realDt;
+    this.lowHpCooldown -= realDt;
+    if (!this.paused && s.player.alive && s.player.hp < s.player.maxHp * 0.3 && this.lowHpCooldown <= 0) {
+      this.lowHpCooldown = 40;
+      this.say('lowHp');
+    }
     if (this.slowmo > 0) {
       this.slowmo -= realDt;
       dt *= 0.3;
@@ -1278,10 +1325,10 @@ export class GameSession {
     }
     this.time += dt;
 
-    if (!this.paused) {
+    if (!this.paused && !this.photo) {
       this.controlPlayer(s, dt);
       // Everyone outside the squad runs on enemy brains, including mind-controlled foes and summoned echoes.
-      for (const a of s.combat.actors) if (a !== s.player && !s.allies.includes(a) && !this.helpers.includes(a)) updateEnemy(a, s.combat, dt);
+      for (const a of s.combat.actors) if (a.archetype !== 'prop' && a !== s.player && !s.allies.includes(a) && !this.helpers.includes(a)) updateEnemy(a, s.combat, dt);
       const ctx: SquadContext = { order: this.order, focus: this.focusTarget, holdAt: this.holdAt };
       for (const ally of s.allies) updateAlly(ally, s.combat, dt, s.player, ctx);
       for (const helper of this.helpers) updateAlly(helper, s.combat, dt, s.player);
@@ -1313,8 +1360,139 @@ export class GameSession {
     this.updateCamera(s, realDt, shake);
     s.hud.update(realDt, this.camera, s.combat.actors.filter((a) => a.team === 'enemy'));
 
+    this.renderFrame();
+  }
+
+  private renderFrame() {
     if (this.composer) this.composer.render();
     else this.renderer.render(this.scene, this.camera);
+  }
+
+  // --- Finishers, banter, photo mode -------------------------------------------------
+
+  /** The blow that ends a boss, or the last enemy standing in a mission, plays in cinematic slow motion. */
+  private maybeFinisher(s: Stage, target: Actor, killer: Actor | null) {
+    if (!killer || killer.team !== 'player' || target.homeTeam !== 'enemy' || target.summoned || this.finisherCooldown > 0) return;
+    const lastOne = !!this.run && !s.combat.actors.some((a) => a !== target && a.alive && a.homeTeam === 'enemy' && !a.summoned);
+    if (target.archetype !== 'boss' && !lastOne) return;
+    this.finisherCooldown = 6;
+    this.slowmo = Math.max(this.slowmo, 1.6);
+    const color = ELEMENT_COLORS[killer.skills[0]?.power.element ?? 'energy'];
+    s.fx.flare(target.center, color, 3.5, 0.6);
+    s.fx.ring(target.pos, '#ffffff', 6, 0.8);
+    s.fx.burst(target.center, color, 50, 16, 0.2);
+    audio().play('ultimate');
+    s.hud.banner('Finisher!', `${killer.name} ends it`, 1.4);
+    const side = Math.atan2(this.camera.position.x - target.pos.x, this.camera.position.z - target.pos.z);
+    this.cine = { focus: target.center, t: 0, duration: 1.8, yaw: side };
+  }
+
+  /** A teammate says something (throttled so it never gets chatty). */
+  private say(event: BanterEvent, about: Actor | null = null, speaker: Actor | null = null) {
+    const s = this.stage;
+    if (!s || this.banterCooldown > 0 || this.photo) return;
+    const pool = [...s.allies, ...this.helpers].filter((a) => a.alive && a.character);
+    const who = speaker && speaker.alive && speaker.character ? speaker : pool[Math.floor(Math.random() * pool.length)];
+    if (!who || who === s.player) return;
+    const target = about ?? s.player;
+    const score = this.opts.bonds?.[who.character!.id] ?? 20;
+    s.hud.bark(who.name, banterLine(event, score, target === who ? 'everyone' : target.name, Math.random()), who.character!.appearance.primary);
+    this.banterCooldown = 7;
+  }
+
+  private togglePhoto() {
+    const s = this.stage;
+    if (!s) return;
+    if (this.photo) {
+      this.photo.bar.remove();
+      this.photo.caption.remove();
+      this.photo.halftone.remove();
+      this.renderer.domElement.style.filter = '';
+      s.hud.root.style.display = '';
+      this.photo = null;
+      return;
+    }
+    if (this.paused) this.togglePause();
+    this.input.cancelTravel();
+    this.hideAim();
+    s.hud.root.style.display = 'none';
+    const caption = h('div', { class: 'photo-caption hidden' });
+    const halftone = h('div', { class: 'photo-halftone hidden' });
+    const filterChips = h('div', { class: 'chips' });
+    const state = { bar: h('div'), caption, halftone, filter: 'none' as PhotoFilter, text: '' };
+    const setFilter = (f: PhotoFilter) => {
+      state.filter = f;
+      this.renderer.domElement.style.filter = PHOTO_FILTERS[f].css;
+      halftone.classList.toggle('hidden', f !== 'comic');
+      filterChips.replaceChildren(...(Object.keys(PHOTO_FILTERS) as PhotoFilter[]).map((k) =>
+        h('button', { class: `chip${k === f ? ' active' : ''}`, onclick: () => setFilter(k) }, PHOTO_FILTERS[k].label)));
+    };
+    setFilter('none');
+    state.bar = h('div', { class: 'photo-bar' },
+      h('div', { class: 'photo-title' }, '📷 Photo mode', h('span', { class: 'muted small' }, ' · drag to orbit, wheel to zoom')),
+      filterChips,
+      h('input', {
+        type: 'text', placeholder: 'Caption (optional)', maxLength: 80, class: 'photo-text',
+        oninput: (e: Event) => {
+          state.text = (e.target as HTMLInputElement).value;
+          caption.textContent = state.text;
+          caption.classList.toggle('hidden', !state.text);
+        },
+      }),
+      h('div', { class: 'row' },
+        h('button', { class: 'btn primary', onclick: () => this.savePhoto() }, '⇩ Save image'),
+        h('button', { class: 'btn', onclick: () => this.togglePhoto() }, 'Exit (O)'),
+      ),
+    );
+    this.root.append(halftone, caption, state.bar);
+    this.photo = state;
+  }
+
+  /** Renders the current view with the filter, halftone, and caption baked in, and downloads it. */
+  private savePhoto() {
+    const ph = this.photo;
+    if (!ph) return;
+    this.renderFrame();
+    const src = this.renderer.domElement;
+    const out = document.createElement('canvas');
+    out.width = src.width;
+    out.height = src.height;
+    const ctx = out.getContext('2d');
+    if (!ctx) return;
+    ctx.filter = PHOTO_FILTERS[ph.filter].css === 'none' ? 'none' : PHOTO_FILTERS[ph.filter].css;
+    ctx.drawImage(src, 0, 0);
+    ctx.filter = 'none';
+    if (ph.filter === 'comic') {
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.18)';
+      const step = Math.max(6, Math.round(out.width / 160));
+      for (let y = 0; y < out.height; y += step) {
+        for (let x = (y / step) % 2 ? step / 2 : 0; x < out.width; x += step) {
+          ctx.beginPath();
+          ctx.arc(x, y, step * 0.22, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+    }
+    if (ph.text) {
+      const size = Math.round(out.width / 40);
+      ctx.font = `800 ${size}px Oxanium, Rajdhani, sans-serif`;
+      const w = ctx.measureText(ph.text.toUpperCase()).width + size * 1.4;
+      const x = size;
+      const y = size;
+      ctx.fillStyle = '#ffe14a';
+      ctx.strokeStyle = '#000';
+      ctx.lineWidth = Math.max(3, size / 6);
+      ctx.fillRect(x, y, w, size * 1.9);
+      ctx.strokeRect(x, y, w, size * 1.9);
+      ctx.fillStyle = '#000';
+      ctx.fillText(ph.text.toUpperCase(), x + size * 0.7, y + size * 1.3);
+    }
+    const a = document.createElement('a');
+    a.href = out.toDataURL('image/png');
+    a.download = `omniverse-${Date.now()}.png`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
   }
 
   private controlPlayer(s: Stage, dt: number) {
@@ -1329,7 +1507,9 @@ export class GameSession {
 
     if (!p.alive) {
       // Drain queued presses so nothing fires on respawn.
-      for (const a of ['attack', 'dodge', 'jump', 'travel', 'swap', 'order', 'assault', 'ultimate', 'skill0', 'skill1', 'skill2', 'skill3'] as const) input.consume(a);
+      for (const a of ['attack', 'dodge', 'jump', 'swap', 'order', 'assault', 'ultimate', 'skill0', 'skill1', 'skill2', 'skill3'] as const) input.consume(a);
+      input.cancelTravel();
+      this.hideAim();
       p.moveIntent.set(0, 0, 0);
       return;
     }
@@ -1337,7 +1517,14 @@ export class GameSession {
       if (p.flying) p.vel.y = 9;
       else s.combat.jump(p);
     }
-    if (input.consume('travel')) s.combat.travel(p);
+    // Tap the travel button to auto-target; hold it to aim by hand.
+    const aimable = !!p.travel && p.travel.kind !== 'flight';
+    this.aiming = aimable && input.travelHeld() >= AIM_HOLD;
+    if (this.aiming) this.updateAim(s, p);
+    const release = input.consumeTravel();
+    if (release === 'tap' || (release === 'aim' && !aimable)) s.combat.travel(p);
+    else if (release === 'aim' && this.aimAt) s.combat.travel(p, null, this.aimAt.point.clone());
+    if (!this.aiming) this.hideAim();
     if (input.consume('swap')) this.swapHero();
     if (input.consume('order')) this.cycleOrder();
     if (input.consume('assault')) this.teamAssault();
@@ -1347,12 +1534,73 @@ export class GameSession {
     if (input.consume('attack')) s.combat.basicAttack(p);
   }
 
+  /** Free aim: a landing marker and flight arc under the cursor (or the screen center on touch). */
+  private updateAim(s: Stage, p: Actor) {
+    if (!p.travel) return;
+    const ndc = this.input.pointer.touch ? new THREE.Vector2(0, 0.1) : new THREE.Vector2(this.input.pointer.x, this.input.pointer.y);
+    const ray = new THREE.Raycaster();
+    ray.setFromCamera(ndc, this.camera);
+    this.aimAt = aimPoint(s.arena.obstacles, p.pos, ray.ray, travelRange(p.travel));
+    const color = new THREE.Color(this.aimAt.clamped ? '#ffaa3e' : ELEMENT_COLORS[p.travel.element]);
+    if (!this.aimMarker) {
+      const group = new THREE.Group();
+      const mat = new THREE.MeshBasicMaterial({ transparent: true, opacity: 0.9, depthTest: false, blending: THREE.AdditiveBlending });
+      const ring = new THREE.Mesh(new THREE.TorusGeometry(1, 0.07, 6, 40), mat);
+      ring.rotation.x = Math.PI / 2;
+      const pillar = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 3, 6), mat);
+      pillar.position.y = 1.5;
+      const arc = new THREE.Line(new THREE.BufferGeometry().setFromPoints(Array.from({ length: 25 }, () => new THREE.Vector3())),
+        new THREE.LineDashedMaterial({ dashSize: 0.5, gapSize: 0.3, transparent: true, opacity: 0.85, depthTest: false }));
+      group.add(ring, pillar, arc);
+      group.renderOrder = 10;
+      this.scene.add(group);
+      this.aimMarker = { group, ring, arc, mat };
+    }
+    const m = this.aimMarker;
+    m.group.visible = true;
+    m.mat.color.copy(color);
+    (m.arc.material as THREE.LineDashedMaterial).color.copy(color);
+    m.ring.position.copy(this.aimAt.point).add(new THREE.Vector3(0, 0.08, 0));
+    m.ring.scale.setScalar(1 + Math.sin(this.time * 8) * 0.12);
+    m.group.children[1].position.set(this.aimAt.point.x, this.aimAt.point.y + 1.5, this.aimAt.point.z);
+    // The path: an arc for leaps and swings, a straight line for blinks and portals.
+    const from = p.center;
+    const to = this.aimAt.point.clone().setY(this.aimAt.point.y + 0.5);
+    const lift = p.travel.kind === 'leap' || p.travel.kind === 'swing' ? 3 + from.distanceTo(to) * 0.25 : 0;
+    const pts = Array.from({ length: 25 }, (_, i) => {
+      const t = i / 24;
+      return from.clone().lerp(to, t).setY(from.y + (to.y - from.y) * t + Math.sin(t * Math.PI) * lift);
+    });
+    m.arc.geometry.setFromPoints(pts);
+    m.arc.computeLineDistances();
+    s.hud.setReticle(this.input.pointer.touch);
+  }
+
+  private hideAim() {
+    if (this.aimMarker) this.aimMarker.group.visible = false;
+    this.aimAt = null;
+    this.stage?.hud.setReticle(false);
+  }
+
   private updateCamera(s: Stage, dt: number, shake: THREE.Vector3) {
     const input = this.input;
     this.camYaw -= input.orbitX;
-    this.camPitch = THREE.MathUtils.clamp(this.camPitch + input.orbitY, 0.05, 1.2);
-    this.camDist = THREE.MathUtils.clamp(this.camDist + input.zoom * 0.8, 5, 18);
+    this.camPitch = THREE.MathUtils.clamp(this.camPitch + input.orbitY, this.photo ? -0.3 : 0.05, this.photo ? 1.5 : 1.2);
+    this.camDist = THREE.MathUtils.clamp(this.camDist + input.zoom * 0.8, this.photo ? 2.5 : 5, this.photo ? 32 : 18);
     input.orbitX = input.orbitY = input.zoom = 0;
+
+    // Finisher: sweep around the final blow, then hand the camera back.
+    if (this.cine) {
+      const c = this.cine;
+      c.t += dt;
+      const k = c.t / c.duration;
+      const yaw = c.yaw + k * 1.3;
+      this.camera.position.set(c.focus.x + Math.sin(yaw) * 5.5, c.focus.y + 1.2 + k * 0.8, c.focus.z + Math.cos(yaw) * 5.5).add(shake);
+      this.camera.position.y = Math.max(0.5, this.camera.position.y);
+      this.camera.lookAt(c.focus);
+      if (k >= 1) this.cine = null;
+      return;
+    }
 
     const target = s.player.center;
     this.camTarget.lerp(target, Math.min(1, dt * 10));
@@ -1466,3 +1714,14 @@ function hashString(s: string): number {
 function isFoe(a: Actor): boolean {
   return a.homeTeam === 'enemy' && !a.summoned;
 }
+
+type PhotoFilter = 'none' | 'comic' | 'noir' | 'pop' | 'vintage' | 'cosmic';
+
+const PHOTO_FILTERS: Record<PhotoFilter, { label: string; css: string }> = {
+  none: { label: 'Natural', css: 'none' },
+  comic: { label: 'Comic', css: 'contrast(1.35) saturate(1.6)' },
+  noir: { label: 'Noir', css: 'grayscale(1) contrast(1.45) brightness(0.92)' },
+  pop: { label: 'Pop', css: 'saturate(2.1) contrast(1.15)' },
+  vintage: { label: 'Golden Age', css: 'sepia(0.65) contrast(1.1) saturate(0.85)' },
+  cosmic: { label: 'Cosmic', css: 'hue-rotate(70deg) saturate(1.6) contrast(1.1)' },
+};

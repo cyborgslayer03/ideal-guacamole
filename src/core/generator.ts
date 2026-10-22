@@ -62,6 +62,7 @@ const POWER_NAMES: Record<PowerKind, string[]> = {
   superspeed: ['Velocity', 'Rush', 'Momentum', 'Overdrive'],
   leap: ['Leap', 'Bound', 'Vault', 'Pounce'],
   swing: ['Swing', 'Tether', 'Grapple Line', 'Slingshot'],
+  portal: ['Gateway', 'Rift Door', 'Portal', 'Waygate'],
   optic: ['Eye-Beams', 'Optic Blast', 'Gaze', 'Glare'],
   web: ['Web', 'Snare', 'Net', 'Tangle'],
   telekinesis: ['Telekinesis', 'Mind Lift', 'Grip', 'Throw'],
@@ -173,7 +174,7 @@ export function randomPowerSet(rng: Rng): Power[] {
   const powers = [randomPower(rng, 'blast', element), ...kinds.map((k) => randomPower(rng, k, rng.chance(0.7) ? element : undefined))];
   if (rng.chance(0.15)) powers.push(randomPower(rng, 'regeneration', 'nature'));
   if (rng.chance(0.75)) {
-    const move = rng.pick(['flight', 'teleport', 'leap', 'superspeed', 'swing'] as const);
+    const move = rng.pick(['flight', 'teleport', 'leap', 'superspeed', 'swing', 'portal'] as const);
     powers.push(randomPower(rng, move, element));
     // Speedsters sometimes pair their speed with a jump.
     if (move === 'superspeed' && rng.chance(0.3)) powers.push(randomPower(rng, 'leap', element));

@@ -9,6 +9,7 @@ import type { EditorContext } from './context';
 import { h, pickBinaryFile, setChildren, toast } from './dom';
 import { checkbox, field, section, select, slider } from './forms';
 import { getPreview } from './preview';
+import { promptDialog } from './overlay';
 
 const STATE_LABELS: Record<ModelState, string> = {
   idle: 'Idle', walk: 'Walk', run: 'Run', jump: 'Jump', fly: 'Fly', attack: 'Attack', cast: 'Power', hurt: 'Hurt', death: 'Death',
@@ -89,8 +90,8 @@ export function modelSection(ctx: EditorContext, c: Character, appearanceChanged
       }, '⬆ Import .glb / .fbx'),
       h('button', {
         class: 'btn small',
-        onclick: () => {
-          const url = prompt('Link to a .glb, .gltf, or .fbx file (https, must allow cross-origin downloads):');
+        onclick: async () => {
+          const url = await promptDialog('Model from a link', 'Link to a .glb, .gltf, or .fbx file. It must start with https:// and the server must allow cross-origin downloads.', 'https://…/hero.glb', 'Use model');
           if (!url) return;
           if (!/^https:\/\/\S+$/.test(url.trim())) return toast('Links must start with https://', 'error');
           setRef(newModelRef(url.trim()));

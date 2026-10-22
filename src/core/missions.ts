@@ -78,6 +78,8 @@ export interface MissionResult {
   squadIds?: string[];
   /** Team combos triggered. */
   combos?: number;
+  /** Run score (0-100) behind the grade. */
+  score?: number;
 }
 
 export type Grade = 'S' | 'A' | 'B' | 'C';

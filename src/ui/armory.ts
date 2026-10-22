@@ -8,6 +8,7 @@ import { MAX_ITEM_LEVEL, RARITIES, STAT_KEYS, type Character, type Item } from '
 import type { EditorContext } from './context';
 import { h, toast } from './dom';
 import { capitalize } from './forms';
+import { confirmDialog } from './overlay';
 
 const STAT_SHORT: Record<string, string> = { strength: 'STR', speed: 'SPD', durability: 'DUR', energy: 'ENG', intelligence: 'INT', combat: 'CMB' };
 
@@ -69,8 +70,8 @@ export function armoryPanel(ctx: EditorContext, hero: Character | null): HTMLEle
         }, cost === null ? 'Max level' : `Upgrade · ${cost} ◈`),
         h('button', {
           class: 'btn small danger',
-          onclick: () => {
-            if (!confirm(`Salvage ${item.name} for ${salvageValue(item)} shards? It's destroyed and removed from anyone wearing it.`)) return;
+          onclick: async () => {
+            if (!(await confirmDialog('Salvage gear?', `Salvage ${item.name} for ${salvageValue(item)} shards? It's destroyed and removed from anyone wearing it.`, 'Salvage'))) return;
             const gained = salvageItem(c, u, item.id);
             ctx.saveCampaign();
             ctx.changed();

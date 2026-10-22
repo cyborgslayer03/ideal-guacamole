@@ -43,6 +43,73 @@ export function floorAt(obstacles: readonly Obstacle[], x: number, z: number, ma
   return floor;
 }
 
+export interface AimResult {
+  point: THREE.Vector3;
+  /** True if the aim was beyond range and pulled back. */
+  clamped: boolean;
+}
+
+/**
+ * Where a free-aimed movement power would land: the first ground, rooftop, or
+ * platform the aim ray hits (a wall stops it just in front), pulled back to the
+ * power's range and kept inside the arena.
+ */
+export function aimPoint(obstacles: readonly Obstacle[], origin: THREE.Vector3, ray: THREE.Ray, range: number): AimResult {
+  let best = Infinity;
+  let hit: THREE.Vector3 | null = null;
+  const consider = (t: number, p: THREE.Vector3) => {
+    if (t > 0.01 && t < best) {
+      best = t;
+      hit = p;
+    }
+  };
+  const { origin: o, direction: d } = ray;
+  // Ground.
+  if (d.y < -1e-4) consider(-o.y / d.y, o.clone().addScaledVector(d, -o.y / d.y));
+  for (const ob of obstacles) {
+    // Tops you can stand on (approached from above).
+    if (ob.walkable && d.y < -1e-4 && o.y > ob.top) {
+      const t = (ob.top - o.y) / d.y;
+      const p = o.clone().addScaledVector(d, t);
+      if (Math.hypot(p.x - ob.x, p.z - ob.z) <= ob.r) consider(t, p);
+    }
+    // Sides of solid columns: land at their foot, just in front of the wall.
+    if (ob.top - ob.bottom < THIN) continue;
+    const fx = o.x - ob.x;
+    const fz = o.z - ob.z;
+    const a = d.x * d.x + d.z * d.z;
+    const b = 2 * (fx * d.x + fz * d.z);
+    const c = fx * fx + fz * fz - ob.r * ob.r;
+    const disc = b * b - 4 * a * c;
+    if (a < 1e-6 || disc < 0 || c < 0) continue;
+    const t = (-b - Math.sqrt(disc)) / (2 * a);
+    const p = o.clone().addScaledVector(d, t);
+    if (p.y < ob.bottom || p.y > ob.top) continue;
+    const out = new THREE.Vector3(p.x - ob.x, 0, p.z - ob.z).normalize();
+    const foot = new THREE.Vector3(ob.x + out.x * (ob.r + 1), 0, ob.z + out.z * (ob.r + 1));
+    foot.y = floorAt(obstacles, foot.x, foot.z, p.y);
+    consider(t, foot);
+  }
+  let point: THREE.Vector3 = hit ?? origin.clone().add(new THREE.Vector3(d.x, 0, d.z).normalize().multiplyScalar(range));
+  let clamped = !hit;
+  const flat = Math.hypot(point.x - origin.x, point.z - origin.z);
+  if (flat > range) {
+    const k = range / flat;
+    point = new THREE.Vector3(origin.x + (point.x - origin.x) * k, 0, origin.z + (point.z - origin.z) * k);
+    point.y = floorAt(obstacles, point.x, point.z, Math.max(origin.y, (hit as THREE.Vector3 | null)?.y ?? 0) + 2);
+    clamped = true;
+  }
+  const r = Math.hypot(point.x, point.z);
+  const max = ARENA_RADIUS - 2;
+  if (r > max) {
+    point.x *= max / r;
+    point.z *= max / r;
+    point.y = floorAt(obstacles, point.x, point.z, point.y + 0.5);
+    clamped = true;
+  }
+  return { point, clamped };
+}
+
 /** Spire, skybridge, and skydeck: a climbable route to the arena's upper levels. */
 function buildLevels(rng: Rng, obstacles: Obstacle[], perches: THREE.Vector3[], group: THREE.Group, mat: THREE.Material, glowMat: THREE.Material, track: <T extends { dispose(): void }>(x: T) => T) {
   const add = (geo: THREE.BufferGeometry, m: THREE.Material, x: number, y: number, z: number) => {

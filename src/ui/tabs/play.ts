@@ -11,6 +11,7 @@ import type { EditorContext } from '../context';
 import { h } from '../dom';
 import { capitalize } from '../forms';
 import { armoryPanel } from '../armory';
+import { confirmDialog } from '../overlay';
 
 const KIND_META: Record<MissionKind, { label: string; color: string; icon: string }> = {
   story: { label: 'Story', color: '#ffc23e', icon: '✎' },
@@ -96,8 +97,8 @@ export function playTab(ctx: EditorContext): HTMLElement {
       h('button', { class: 'btn', onclick: () => hero && ctx.playSandbox(null, hero.id) }, 'Omni Sandbox'),
       !ctx.quick && h('button', {
         class: 'btn danger',
-        onclick: () => {
-          if (!confirm('Reset the campaign? Relationships, factions, and story progress start over. Characters keep their levels.')) return;
+        onclick: async () => {
+          if (!(await confirmDialog('Reset campaign?', 'Relationships, factions, schemes, and story progress start over. Characters keep their levels and gear.', 'Reset'))) return;
           ctx.resetCampaign();
           ctx.report = null;
           ctx.rerender();

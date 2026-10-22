@@ -62,3 +62,38 @@ export function overlay(
   layer.querySelector<HTMLInputElement>('input, textarea')?.focus();
   return { close, setError: (msg) => (error.textContent = msg) };
 }
+
+/**
+ * In-app replacement for window.confirm, which sandboxed pages (like embedded
+ * previews) silently block. Resolves true only if the user confirms.
+ */
+export function confirmDialog(title: string, message: string, confirmLabel = 'Confirm', danger = true): Promise<boolean> {
+  return new Promise((resolve) => {
+    let answered = false;
+    overlay(title, h('p', null, message), [
+      { label: 'Cancel', onClick: () => {} },
+      { label: confirmLabel, primary: !danger, danger, onClick: () => ((answered = true), resolve(true)) },
+    ], { onClose: () => !answered && resolve(false) });
+  });
+}
+
+/** In-app replacement for window.prompt. Resolves null if cancelled. */
+export function promptDialog(title: string, message: string, placeholder = '', confirmLabel = 'OK'): Promise<string | null> {
+  return new Promise((resolve) => {
+    let answered = false;
+    const input = h('input', { type: 'text', placeholder, class: 'prompt-input' });
+    const submit = () => {
+      answered = true;
+      resolve(input.value.trim() || null);
+    };
+    const dialog = overlay(title, h('div', null, h('p', null, message), input), [
+      { label: 'Cancel', onClick: () => {} },
+      { label: confirmLabel, primary: true, onClick: submit },
+    ], { onClose: () => !answered && resolve(null) });
+    input.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter') return;
+      submit();
+      dialog.close();
+    });
+  });
+}

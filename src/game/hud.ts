@@ -11,7 +11,7 @@ import type { Action, Input } from './input';
 
 const KIND_ICON: Record<PowerKind, string> = {
   blast: '✦', beam: '═', nova: '✺', dash: '➤', shield: '⛨', heal: '✚',
-  flight: '⇮', teleport: '⌖', superspeed: '≫', leap: '⤊', swing: '↷',
+  flight: '⇮', teleport: '⌖', superspeed: '≫', leap: '⤊', swing: '↷', portal: '◎',
   optic: '◉', web: '❋', telekinesis: '☄', reality: '❂', mindcontrol: '♾', summon: '⚇', drain: '☠',
   gravity: '◍', storm: 'ϟ', timestop: '⧗', phase: '◌', sonic: '≋', grow: '⇱', stealth: '◐', stretch: '↭',
   regeneration: '♥',
@@ -128,7 +128,7 @@ export class Hud {
       h('button', { class: 'skill attack', onpointerdown: press('attack') }, h('span', { class: 'skill-icon' }, '✊'), h('span', { class: 'key' }, 'J')),
       h('button', { class: 'skill dodge', onpointerdown: press('dodge') }, h('span', { class: 'skill-icon' }, '»'), h('span', { class: 'key' }, '⇧')),
       h('button', { class: 'skill jump', onpointerdown: press('jump') }, h('span', { class: 'skill-icon' }, '⤒'), h('span', { class: 'key' }, '␣')),
-      ...[this.buildTravelButton(press)].filter((x): x is HTMLElement => !!x),
+      ...[this.buildTravelButton()].filter((x): x is HTMLElement => !!x),
       this.ultButton,
       ...(this.assaultButton ? [this.assaultButton] : []),
       ...skills,
@@ -175,14 +175,20 @@ export class Hud {
     this.orderEl.classList.toggle('hidden', this.squad.length < 2);
   }
 
-  private buildTravelButton(press: (a: Action) => (e: Event) => void): HTMLElement | null {
+  private buildTravelButton(): HTMLElement | null {
     const p = this.player.travel;
     if (!p) return null;
     this.travelButton = h('button', {
       class: 'skill fly',
       style: `--c:${ELEMENT_COLORS[p.element]}`,
-      title: `${p.name} (${p.kind})`,
-      onpointerdown: press('travel'),
+      title: `${p.name}: tap to use, hold to aim`,
+      onpointerdown: (e: PointerEvent) => {
+        e.preventDefault();
+        this.input.travelDown();
+        (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
+      },
+      onpointerup: () => this.input.travelUp(),
+      onpointercancel: () => this.input.cancelTravel(),
     }, h('span', { class: 'skill-icon' }, KIND_ICON[p.kind]), h('span', { class: 'key' }, 'V'));
     return this.travelButton;
   }
@@ -277,6 +283,35 @@ export class Hud {
     this.bossTarget = boss;
   }
   private bossTarget: Actor | null = null;
+
+  private barkEl: HTMLElement | null = null;
+  private barkTimer = 0;
+
+  /** A teammate's line of banter, shown in a speech bubble for a few seconds. */
+  bark(speaker: string, text: string, color: string) {
+    if (!this.barkEl) {
+      this.barkEl = h('div', { class: 'bark hidden' });
+      this.root.append(this.barkEl);
+    }
+    this.barkEl.style.setProperty('--c', color);
+    this.barkEl.replaceChildren(h('b', null, speaker), h('span', null, text));
+    this.barkEl.classList.remove('hidden', 'bark-in');
+    void this.barkEl.offsetWidth;
+    this.barkEl.classList.add('bark-in');
+    window.clearTimeout(this.barkTimer);
+    this.barkTimer = window.setTimeout(() => this.barkEl?.classList.add('hidden'), 3600);
+  }
+
+  private reticle: HTMLElement | null = null;
+
+  /** Crosshair at the screen center while aiming on touch screens. */
+  setReticle(visible: boolean) {
+    if (visible && !this.reticle) {
+      this.reticle = h('div', { class: 'aim-reticle' });
+      this.root.append(this.reticle);
+    }
+    this.reticle?.classList.toggle('hidden', !visible);
+  }
 
   /** Re-reads a boss's title (phase changes) if it's the one on the bar. */
   refreshBoss(boss: Actor) {
