@@ -259,12 +259,12 @@ export class App {
           },
         }, 'stories');
       },
-      playMission: (mission: Mission, heroId: string, allyId: string | null) => {
+      playMission: (mission: Mission, heroId: string, squadIds: string[]) => {
         flush();
         const c = ctx.campaign;
         this.library.saveCampaign(c);
         this.startSession(universe, heroId, {
-          plan: planMission(c, universe, mission, heroId, allyId),
+          plan: planMission(c, universe, mission, heroId, squadIds),
           bossOptions: (bossId) => bossOptions(c, universe, bossId),
           onFinish: (r) => {
             const news = resolveMission(c, universe, mission, r, heroId);

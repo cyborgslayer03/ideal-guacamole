@@ -26,8 +26,10 @@ export interface MissionPlan {
   choice: StoryChoice | null;
   rewardItemId: string | null;
   xp: number;
-  /** A friendly character fighting alongside the player. */
-  allyId: string | null;
+  /** Friendly characters fighting alongside the player (up to three), as an autonomous AI squad. */
+  allyIds: string[];
+  /** Shown when the squad assembles, e.g. "The Vanguard". */
+  teamName: string | null;
   /** A nemesis who crashes a patrol partway through. */
   ambushId: string | null;
   ambushLine: string;
@@ -70,6 +72,51 @@ export interface MissionResult {
   /** Index of the story choice option picked, if any. */
   choice: number | null;
   ambient?: AmbientSummary;
+  /** Performance rating for the run. */
+  grade?: Grade;
+  /** Squad members (not the mission's hero) who fought in the mission. */
+  squadIds?: string[];
+}
+
+export type Grade = 'S' | 'A' | 'B' | 'C';
+
+export interface RunStats {
+  seconds: number;
+  /** Expected duration; finishing faster than this scores better. */
+  parSeconds: number;
+  /** Fraction (0-1+) of the controlled heroes' max health lost over the run. */
+  damageTakenRatio: number;
+  maxCombo: number;
+  /** Times a squad member was downed. */
+  downs: number;
+}
+
+/** Turns a run into a letter grade. Pure, so it can be tested and reused. */
+export function gradeRun(s: RunStats): { grade: Grade; score: number; xpBonus: number } {
+  let score = 100;
+  score -= Math.max(0, (s.seconds - s.parSeconds) / s.parSeconds) * 30;
+  score -= Math.min(1, s.damageTakenRatio) * 35;
+  score -= s.downs * 12;
+  score += Math.min(15, s.maxCombo / 4);
+  score = Math.max(0, Math.min(100, Math.round(score)));
+  const grade: Grade = score >= 90 ? 'S' : score >= 75 ? 'A' : score >= 60 ? 'B' : 'C';
+  return { grade, score, xpBonus: { S: 0.5, A: 0.25, B: 0.1, C: 0 }[grade] };
+}
+
+/** Rough expected time for a plan's phases, used as par for grading. */
+export function parTime(phases: Phase[]): number {
+  return phases.reduce((t, p) => {
+    switch (p.kind) {
+      case 'defeat':
+        return t + 6 + p.count * 4;
+      case 'survive':
+        return t + p.seconds;
+      case 'bosses':
+        return t + 45 * p.bossIds.length;
+      case 'patrol':
+        return t + 50 * p.events.length;
+    }
+  }, 0);
 }
 
 /** First chapter at or after `start` whose condition is met by the flags. */
@@ -107,7 +154,8 @@ export function planChapter(u: Universe, story: Story, index: number): MissionPl
     choice: ch.choice,
     rewardItemId: u.items.some((i) => i.id === ch.rewardItemId) ? ch.rewardItemId : null,
     xp: 100 + ch.enemyLevel * 40,
-    allyId: null,
+    allyIds: [],
+    teamName: null,
     ambushId: null,
     ambushLine: '',
     decideBosses: false,

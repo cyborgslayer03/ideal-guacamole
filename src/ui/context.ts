@@ -24,7 +24,8 @@ export interface EditorContext {
   playSandbox(locationId: string | null, characterId: string): void;
   /** Test-play a story outside the campaign (choices only affect this run). */
   playStory(storyId: string, chapter: number, characterId: string): void;
-  playMission(mission: Mission, heroId: string, allyId: string | null): void;
+  /** Launch a campaign mission with up to three AI teammates. */
+  playMission(mission: Mission, heroId: string, squadIds: string[]): void;
   exportBundle(bundle: Bundle | null): void;
   /** Share to the Multiverse Hub (signs in first if needed). */
   publishBundle(bundle: Bundle | null): void;

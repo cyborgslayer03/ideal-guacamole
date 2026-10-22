@@ -11,7 +11,7 @@ import { randomCharacter } from './generator';
 import type { BossOption, BossOutcome, MissionPlan, MissionResult, PatrolEvent, Phase } from './missions';
 import { chapterPhase, nextChapterIndex } from './missions';
 import { Rng } from './rng';
-import { MAX_LEVEL, clamp, combatPower } from './rules';
+import { MAX_LEVEL, clamp, combatPower, grantXp } from './rules';
 import type { Character, DialogueLine, Faction, Universe } from './types';
 
 export const CAMPAIGN_SCHEMA = 1;
@@ -51,7 +51,7 @@ export interface StoryProgress {
   done: boolean;
 }
 
-export type NewsKind = 'mission' | 'succession' | 'nemesis' | 'ally' | 'escape' | 'faction' | 'story' | 'betrayal';
+export type NewsKind = 'mission' | 'succession' | 'nemesis' | 'ally' | 'escape' | 'faction' | 'story' | 'betrayal' | 'contract';
 
 export interface NewsItem {
   turn: number;
@@ -69,9 +69,11 @@ export interface Campaign {
   relations: Record<string, Relationship>;
   stories: Record<string, StoryProgress>;
   news: NewsItem[];
+  /** Ids of contracts already completed (see activeContracts). */
+  contractsDone: string[];
 }
 
-export type MissionKind = 'story' | 'patrol' | 'raid' | 'hunt' | 'vendetta' | 'ally' | 'defense';
+export type MissionKind = 'story' | 'patrol' | 'raid' | 'hunt' | 'vendetta' | 'ally' | 'defense' | 'teamup';
 
 export interface Mission {
   id: string;
@@ -93,6 +95,8 @@ export interface Mission {
   allyId: string | null;
   /** Nemesis who may ambush a patrol. */
   ambushId: string | null;
+  /** Team-up missions: the hero faction that assembles for it. */
+  teamId: string | null;
 }
 
 const MAX_NEWS = 60;
@@ -129,6 +133,7 @@ export function createCampaign(u: Universe): Campaign {
     relations: {},
     stories: {},
     news: [{ turn: 1, kind: 'faction', text: 'The War Table is online. Choose your first mission.' }],
+    contractsDone: [],
   };
   syncCampaign(c, u);
   return c;
@@ -183,6 +188,7 @@ export function loadCampaign(raw: unknown, u: Universe): Campaign {
     relations: {},
     stories: typeof o.stories === 'object' && o.stories ? { ...(o.stories as Record<string, StoryProgress>) } : {},
     news: Array.isArray(o.news) ? o.news.slice(0, MAX_NEWS) : [],
+    contractsDone: Array.isArray(o.contractsDone) ? o.contractsDone.filter((x): x is string => typeof x === 'string').slice(-200) : [],
   };
   for (const [id, r] of Object.entries(o.relations as Record<string, Relationship>)) {
     if (!r || typeof r !== 'object') continue;
@@ -297,7 +303,7 @@ export function missionBoard(c: Campaign, u: Universe): Mission[] {
   const locId = () => (u.locations.length ? rng.pick(u.locations).id : '');
   const name = (id: string) => u.characters.find((x) => x.id === id)?.alias ?? 'Unknown';
   const factionName = (id: string | null) => u.factions.find((f) => f.id === id)?.name ?? 'Unknown forces';
-  const add = (m: Omit<Mission, 'id' | 'level' | 'xp' | 'rewardItemId' | 'storyId' | 'chapter' | 'allyId' | 'ambushId'> & Partial<Mission>) => {
+  const add = (m: Omit<Mission, 'id' | 'level' | 'xp' | 'rewardItemId' | 'storyId' | 'chapter' | 'allyId' | 'ambushId' | 'teamId'> & Partial<Mission>) => {
     const level = m.level ?? clamp(base + m.difficulty - 2, 1, MAX_LEVEL);
     missions.push({
       id: `${m.kind}:${c.turn}:${missions.length}`,
@@ -308,6 +314,7 @@ export function missionBoard(c: Campaign, u: Universe): Mission[] {
       chapter: 0,
       allyId: null,
       ambushId: null,
+      teamId: null,
       ...m,
     });
   };
@@ -438,6 +445,27 @@ export function missionBoard(c: Campaign, u: Universe): Mission[] {
     });
   }
 
+  // Team-ups: a whole hero team assembles against a villain faction's leadership.
+  for (const team of u.factions.filter((f) => f.alignment === 'hero' || f.alignment === 'antihero')) {
+    const members = teamRoster(c, u, team.id);
+    const enemy = hostile.find((h) => h.s.lieutenantIds.some((id) => isFree(c, id))) ?? hostile[0];
+    if (members.length < 2 || !enemy) continue;
+    const lts = enemy.s.lieutenantIds.filter((id) => isFree(c, id)).slice(0, 2);
+    add({
+      kind: 'teamup',
+      title: `Team-Up: ${team.name} vs ${enemy.f.name}`,
+      brief: `${members.slice(0, 4).map((x) => x.alias).join(', ')} assemble to break ${enemy.f.name}'s command.`,
+      locationId: locId(),
+      factionId: enemy.f.id,
+      targetIds: [...lts, enemy.leader.id],
+      difficulty: 5,
+      level: clamp(base + 4, 1, MAX_LEVEL),
+      rewardItemId: rareLoot(),
+      teamId: team.id,
+    });
+    break;
+  }
+
   // Patrols: open-ended sweeps with random events, sometimes an elite or an ambush.
   const patrolCount = Math.min(2, Math.max(1, u.locations.length));
   for (let i = 0; i < patrolCount; i++) {
@@ -487,15 +515,30 @@ export function barks(c: Campaign, u: Universe, characterId: string, heroName: s
   }
 }
 
-export function planMission(c: Campaign, u: Universe, m: Mission, heroId: string, companionId: string | null): MissionPlan {
+/** Free, friendly members of a hero faction, strongest first (for team-up squads). */
+export function teamRoster(c: Campaign, u: Universe, teamId: string): Character[] {
+  return u.characters
+    .filter((x) => x.factionId === teamId && c.relations[x.id]?.state === 'free' && !isHostile(c, x))
+    .sort((a, b) => combatPower(b, u.items) - combatPower(a, u.items));
+}
+
+/** The AI squad for a mission: required ally first, then the team (team-ups) or the player's picks. Max 3. */
+export function missionSquad(c: Campaign, u: Universe, m: Mission, heroId: string, picks: string[]): string[] {
+  const team = m.teamId ? teamRoster(c, u, m.teamId).map((x) => x.id) : [];
+  // Team-ups field the team; other missions take the required ally, then the player's picks.
+  const ordered = m.teamId ? [...team, ...picks] : [...(m.allyId ? [m.allyId] : []), ...picks];
+  return [...new Set(ordered)].filter((id) => id !== heroId && u.characters.some((x) => x.id === id)).slice(0, 3);
+}
+
+export function planMission(c: Campaign, u: Universe, m: Mission, heroId: string, picks: string[] = []): MissionPlan {
   const hero = u.characters.find((x) => x.id === heroId);
   const heroName = hero?.alias ?? 'Hero';
   const rng = new Rng(mix(c.seed, c.turn, hash(m.id)));
   const name = (id: string) => u.characters.find((x) => x.id === id)?.alias ?? 'the boss';
   const bossPower: Record<string, number> = {};
   for (const id of [...m.targetIds, ...(m.ambushId ? [m.ambushId] : [])]) bossPower[id] = 1 + 0.2 * (c.relations[id]?.theirWins ?? 0);
-  const allyId = m.allyId ?? companionId;
-  const allyLines = allyId && allyId !== heroId ? barks(c, u, allyId, heroName).slice(0, 1) : [];
+  const squad = missionSquad(c, u, m, heroId, picks);
+  const allyLines = squad.slice(0, 2).flatMap((id) => barks(c, u, id, heroName).slice(0, 1));
   const targetLines = m.targetIds.slice(-1).flatMap((id) => barks(c, u, id, heroName));
 
   let intro: DialogueLine[] = [{ speaker: 'Command', text: m.brief }];
@@ -548,6 +591,24 @@ export function planMission(c: Campaign, u: Universe, m: Mission, heroId: string
       intro.push({ speaker: name(m.allyId!), text: `${heroName}! Thank goodness. They're everywhere!` });
       outro = [{ speaker: name(m.allyId!), text: `I owe you one, ${heroName}. Call me if you ever need help.` }];
       break;
+    case 'teamup': {
+      const leader = m.targetIds[m.targetIds.length - 1];
+      const lts = m.targetIds.slice(0, -1);
+      const team = u.factions.find((f) => f.id === m.teamId);
+      phases = [
+        { kind: 'defeat', count: 18, label: 'Clear the streets' },
+        ...(lts.length ? [{ kind: 'bosses' as const, bossIds: lts, minions: true, label: 'Break the lieutenants' }] : []),
+        { kind: 'bosses', bossIds: [leader], minions: true, label: `Take down ${name(leader)}` },
+      ];
+      intro = [
+        { speaker: heroName, text: `${team?.name ?? 'Team'}, assemble!` },
+        ...squad.map((id) => ({ speaker: name(id), text: rng.pick(['Ready.', 'Right behind you.', 'Let’s do this.', 'On your call.']) })),
+        { speaker: 'Command', text: m.brief },
+        ...barks(c, u, leader, heroName),
+      ];
+      outro = [{ speaker: heroName, text: `That's how ${team?.name ?? 'a team'} gets it done.` }];
+      break;
+    }
     case 'defense':
       phases = [{ kind: 'defeat', count: 10, label: 'Repel the assault' }, { kind: 'survive', seconds: 40, label: 'Hold the line' }];
       break;
@@ -559,18 +620,19 @@ export function planMission(c: Campaign, u: Universe, m: Mission, heroId: string
     locationId: m.locationId,
     factionId: m.factionId,
     level: m.level,
-    intro: [...intro, ...(m.kind === 'story' ? [] : allyLines)],
+    intro: [...intro, ...(m.kind === 'story' || m.kind === 'teamup' ? [] : allyLines)],
     phases,
     outro,
     choice,
     rewardItemId: m.rewardItemId,
     xp: m.xp,
-    allyId: allyId && allyId !== heroId ? allyId : null,
+    allyIds: squad,
+    teamName: m.kind === 'teamup' ? u.factions.find((f) => f.id === m.teamId)?.name ?? null : null,
     ambushId: m.ambushId,
     ambushLine: m.ambushId ? barks(c, u, m.ambushId, heroName)[0]?.text ?? '' : '',
     decideBosses: true,
     bossPower,
-    ambient: m.kind === 'patrol' ? ambientCast(c, u, m, heroId, allyId) : null,
+    ambient: m.kind === 'patrol' ? ambientCast(c, u, m, heroId, squad) : null,
   };
 }
 
@@ -578,8 +640,8 @@ export function planMission(c: Campaign, u: Universe, m: Mission, heroId: string
  * Who can turn up in a patrol's ambient events: hostile characters on the
  * run (the patrolled faction's own first), and friends who might call for help.
  */
-function ambientCast(c: Campaign, u: Universe, m: Mission, heroId: string, companionId: string | null) {
-  const busy = new Set([heroId, companionId, ...m.targetIds, m.ambushId].filter(Boolean));
+function ambientCast(c: Campaign, u: Universe, m: Mission, heroId: string, squad: string[]) {
+  const busy = new Set([heroId, ...squad, ...m.targetIds, m.ambushId].filter(Boolean));
   const hostile = u.characters.filter((x) => isHostile(c, x) && !busy.has(x.id));
   const own = hostile.filter((x) => factionOf(c, x.id) === m.factionId);
   const friends = u.characters.filter((x) => {
@@ -762,7 +824,7 @@ function applyOutcome(c: Campaign, u: Universe, rng: Rng, news: Chronicle, bossI
   if (vacated && fid && faction) succession(c, u, rng, news, fid, boss, outcome, hero.id);
 }
 
-const KIND_POWER_HIT: Record<MissionKind, number> = { story: 10, patrol: 6, raid: 25, hunt: 8, vendetta: 6, ally: 5, defense: 15 };
+const KIND_POWER_HIT: Record<MissionKind, number> = { story: 10, patrol: 6, raid: 25, hunt: 8, vendetta: 6, ally: 5, defense: 15, teamup: 30 };
 
 /**
  * Applies a finished mission to the world, advances time, and returns what
@@ -812,9 +874,77 @@ export function resolveMission(c: Campaign, u: Universe, m: Mission, result: Mis
     for (const f of hostileFactions(c, u)) if (f.s.power >= 70) f.s.power = clamp(f.s.power + 3, 0, 100);
   }
 
+  if (result.victory) completeContracts(c, u, m, result, hero, news);
+  // Teammates who fought alongside you grow closer.
+  if (result.victory) for (const id of result.squadIds ?? []) if (id !== heroId) shiftScore(c, u, news, id, 3);
   advanceWorld(c, u, rng, news);
   c.news = [...news.items].reverse().concat(c.news).slice(0, MAX_NEWS);
   return news.items;
+}
+
+// --- Contracts -------------------------------------------------------------------
+
+export type ContractKind = 'teamup' | 'arrest' | 'spare' | 'rescue' | 'raid' | 'grade' | 'incidents' | 'patrol' | 'squad';
+
+export interface Contract {
+  id: string;
+  kind: ContractKind;
+  title: string;
+  detail: string;
+  xp: number;
+}
+
+const CONTRACTS: Record<ContractKind, Omit<Contract, 'id' | 'kind'>> = {
+  teamup: { title: 'Assemble', detail: 'Win a Team-Up mission.', xp: 600 },
+  arrest: { title: 'Due Process', detail: 'Arrest a defeated villain.', xp: 300 },
+  spare: { title: 'Mercy', detail: 'Spare a defeated villain.', xp: 300 },
+  rescue: { title: 'First Responder', detail: 'Rescue an ally during a patrol.', xp: 350 },
+  raid: { title: 'Stronghold Breaker', detail: 'Win a raid.', xp: 500 },
+  grade: { title: 'Flawless', detail: 'Earn an S grade on any mission.', xp: 450 },
+  incidents: { title: 'Busy Night', detail: 'Handle 3 incidents in one patrol.', xp: 400 },
+  patrol: { title: 'Beat Cop', detail: 'Complete a patrol.', xp: 200 },
+  squad: { title: 'Strength in Numbers', detail: 'Win a mission with a squad of 3 or more heroes.', xp: 350 },
+};
+
+/** Three contracts that rotate every three turns (deterministic per campaign). */
+export function activeContracts(c: Campaign): Contract[] {
+  const window = Math.floor((c.turn - 1) / 3);
+  const rng = new Rng(mix(c.seed, window, 0xc0ffee));
+  return rng.shuffle(Object.keys(CONTRACTS) as ContractKind[]).slice(0, 3).map((kind) => ({ id: `${kind}:${window}`, kind, ...CONTRACTS[kind] }));
+}
+
+function contractMet(kind: ContractKind, m: Mission, r: MissionResult): boolean {
+  const outcomes = Object.values(r.outcomes);
+  switch (kind) {
+    case 'teamup':
+      return m.kind === 'teamup';
+    case 'arrest':
+      return outcomes.includes('arrest');
+    case 'spare':
+      return outcomes.includes('spare');
+    case 'rescue':
+      return (r.ambient?.helpedAllyIds.length ?? 0) > 0;
+    case 'raid':
+      return m.kind === 'raid';
+    case 'grade':
+      return r.grade === 'S';
+    case 'incidents':
+      return (r.ambient?.completed ?? 0) >= 3;
+    case 'patrol':
+      return m.kind === 'patrol';
+    case 'squad':
+      return (r.squadIds?.length ?? 0) >= 2;
+  }
+}
+
+function completeContracts(c: Campaign, u: Universe, m: Mission, r: MissionResult, hero: Character, news: Chronicle) {
+  for (const contract of activeContracts(c)) {
+    if (c.contractsDone.includes(contract.id) || !contractMet(contract.kind, m, r)) continue;
+    c.contractsDone.push(contract.id);
+    grantXp(hero, contract.xp);
+    news.add('contract', `Contract complete: ${contract.title} (+${contract.xp} XP for ${hero.alias}).`);
+  }
+  void u;
 }
 
 /** Story choices write flags and shift relationships; progress follows the flags. */

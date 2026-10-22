@@ -13,6 +13,12 @@ import { CharacterModel, idleAnim, type AnimState } from './model';
 
 export type Team = 'player' | 'enemy';
 export type Archetype = 'hero' | 'ally' | 'grunt' | 'gunner' | 'brute' | 'boss';
+export type SquadRole = 'tank' | 'striker' | 'ranged' | 'support';
+
+/** Seconds a downed hero can wait for a revive. */
+export const BLEED_OUT = 25;
+/** Seconds a teammate must stay beside a downed hero to revive them. */
+export const REVIVE_TIME = 2.5;
 
 export interface SkillSlot {
   power: Power;
@@ -88,12 +94,22 @@ export class Actor {
   readonly speedMult: number;
   /** Set while airborne from a Super Leap; the slam lands with it. */
   leap: { damage: number; element: Element; radius: number } | null = null;
+  /** Squad play: knocked out but revivable by a nearby teammate. */
+  downed = false;
+  bleedOut = 0;
+  reviveProgress = 0;
+  /** Seconds left in which a hit would count as a perfect dodge. */
+  perfectWindow = 0;
+  /** AI teammates: the role they play and the enemy they're on. */
+  squadRole: SquadRole | null = null;
+  aiTarget: Actor | null = null;
   private trailTimer = 0;
 
   constructor(
     readonly name: string,
     readonly team: Team,
-    readonly archetype: Archetype,
+    /** Mutable so control can pass between squad members (tag-switching). */
+    public archetype: Archetype,
     readonly stats: Stats,
     public level: number,
     appearance: Appearance,
@@ -176,6 +192,8 @@ interface Channel {
 const projectileGeo = new THREE.SphereGeometry(1, 10, 8);
 const shieldGeo = new THREE.SphereGeometry(1, 20, 14);
 
+const isSquad = (a: Actor) => a.archetype === 'hero' || a.archetype === 'ally';
+
 export class Combat {
   readonly actors: Actor[] = [];
   private projectiles: Projectile[] = [];
@@ -187,6 +205,11 @@ export class Combat {
   powerScale = 1;
   onDamage: (e: DamageEvent) => void = () => {};
   onKill: (target: Actor, killer: Actor | null) => void = () => {};
+  /** Squad play: heroes go down (revivable) instead of dying outright. */
+  downedEnabled = false;
+  onDowned: (a: Actor) => void = () => {};
+  onRevived: (a: Actor, by: Actor | null) => void = () => {};
+  onPerfectDodge: (a: Actor) => void = () => {};
 
   constructor(
     private readonly scene: THREE.Scene,
@@ -245,7 +268,8 @@ export class Combat {
   }
 
   /** The travel button: toggles flight, blinks a teleporter, or launches a leap. */
-  travel(a: Actor): boolean {
+  /** `preferred` lets AI aim a teleport or leap at the enemy it chose, not just the nearest. */
+  travel(a: Actor, preferred: Actor | null = null): boolean {
     const p = a.travel;
     if (!p || !a.alive || a.stun > 0) return false;
     if (p.kind === 'flight') {
@@ -253,16 +277,17 @@ export class Combat {
       return true;
     }
     if (a.travelRemaining > 0 || a.castTimer > 0) return false;
-    const ok = p.kind === 'teleport' ? this.teleport(a, p) : this.superLeap(a, p);
+    const ok = p.kind === 'teleport' ? this.teleport(a, p, preferred) : this.superLeap(a, p, preferred);
     if (ok) a.travelRemaining = a.travelCooldown;
     return ok;
   }
 
   /** Blink toward the target (or the way you're moving) and shock whoever is near the landing spot. */
-  private teleport(a: Actor, p: Power): boolean {
+  private teleport(a: Actor, p: Power, preferred: Actor | null): boolean {
     const color = ELEMENT_COLORS[p.element];
     const range = teleportRange(p);
-    const target = this.findTarget(a, range + 6);
+    // A chosen target out of reach means "blink toward it" (along the steering direction).
+    const target = preferred ? (preferred.pos.distanceTo(a.pos) <= range + 6 ? preferred : null) : this.findTarget(a, range + 6);
     const from = a.pos.clone();
     const to = new THREE.Vector3();
     // The player steers a blink with the stick; AI (and an idle player) blink to the target.
@@ -299,9 +324,9 @@ export class Combat {
   }
 
   /** A long arcing jump toward the target that slams down on landing. */
-  private superLeap(a: Actor, p: Power): boolean {
+  private superLeap(a: Actor, p: Power, preferred: Actor | null): boolean {
     if (!a.grounded || a.flying) return false;
-    const target = a.ai.flee ? null : this.findTarget(a, 26);
+    const target = a.ai.flee ? null : preferred ? (preferred.pos.distanceTo(a.pos) <= 26 ? preferred : null) : this.findTarget(a, 26);
     const flightTime = 0.9;
     const dest = target
       ? target.pos.clone()
@@ -391,6 +416,7 @@ export class Combat {
     a.vel.z = dir.z * 30;
     a.dodgeTimer = DODGE_TIME;
     a.dodgeCooldown = DODGE_COOLDOWN;
+    a.perfectWindow = 0.2;
     a.invuln = DODGE_TIME + 0.08;
     a.attackTimer = 0;
     a.comboStep = 0;
@@ -508,10 +534,15 @@ export class Combat {
         break;
       case 'heal': {
         a.castTimer = 0.4;
-        a.regen = 4;
-        a.regenPerSec = (a.maxHp * (0.06 + p.potency * 0.012));
+        // Heals reach every teammate in range, not just the caster.
+        for (const ally of this.squadOf(a)) {
+          if (ally !== a && ally.pos.distanceTo(a.pos) > 8) continue;
+          ally.regen = 4;
+          ally.regenPerSec = ally.maxHp * (0.06 + p.potency * 0.012);
+          if (ally !== a) this.fx.burst(ally.center, color, 10, 4, 0.12);
+        }
         this.fx.burst(a.center, color, 20, 5, 0.15);
-        this.fx.ring(a.pos, color, 3.5);
+        this.fx.ring(a.pos, color, 8);
         break;
       }
       case 'flight':
@@ -589,6 +620,10 @@ export class Combat {
   // --- Damage --------------------------------------------------------------
 
   damage(target: Actor, raw: number, source: Actor | null, element: Element | null, knockback = 0) {
+    if (target.alive && target.invuln > 0 && target.perfectWindow > 0 && source && source.team !== target.team) {
+      target.perfectWindow = 0;
+      this.onPerfectDodge(target);
+    }
     if (!target.alive || target.invuln > 0) return;
     let amount = raw * (source?.damageMult ?? 1);
     if (element === 'cosmic') amount *= 1.25;
@@ -631,7 +666,68 @@ export class Combat {
     target.hp = 0;
     target.alive = false;
     this.fx.burst(target.center, '#ffffff', 16, 9);
+    // In squad play, heroes go down instead of out, and teammates can revive them.
+    if (this.downedEnabled && isSquad(target) && !target.downed) {
+      target.downed = true;
+      target.bleedOut = BLEED_OUT;
+      target.reviveProgress = 0;
+      target.burn = target.regen = target.shield = 0;
+      this.onDowned(target);
+      return;
+    }
     this.onKill(target, source);
+  }
+
+  /** Living heroes and allies on the actor's team (the actor included). */
+  squadOf(a: Actor): Actor[] {
+    return this.actors.filter((x) => x.alive && x.team === a.team && isSquad(x));
+  }
+
+  private updateDowned(a: Actor, dt: number) {
+    a.bleedOut -= dt;
+    const helper = this.actors.find((x) => x.alive && x.team === a.team && isSquad(x) && Math.hypot(x.pos.x - a.pos.x, x.pos.z - a.pos.z) < 2.5 && Math.abs(x.pos.y - a.pos.y) < 2);
+    a.reviveProgress = helper ? a.reviveProgress + dt : Math.max(0, a.reviveProgress - dt * 0.5);
+    if (helper && Math.random() < dt * 6) this.fx.burst(a.center, '#3eff8b', 2, 2, 0.12);
+    if (a.reviveProgress >= REVIVE_TIME) {
+      a.downed = false;
+      a.alive = true;
+      a.hp = Math.round(a.maxHp * 0.4);
+      a.invuln = 2;
+      a.vel.set(0, 0, 0);
+      a.model.root.rotation.x = 0;
+      this.fx.flare(a.center, '#3eff8b', 3, 0.5);
+      this.fx.ring(a.pos, '#3eff8b', 4);
+      this.onRevived(a, helper ?? null);
+    } else if (a.bleedOut <= 0) {
+      a.downed = false;
+      this.onKill(a, null);
+    }
+  }
+
+  /**
+   * Team Assault: every squad member unleashes their strongest attack at once.
+   * Returns how many heroes took part.
+   */
+  teamAssault(leader: Actor): number {
+    const squad = this.squadOf(leader).filter((m) => m.pos.distanceTo(leader.pos) < 25);
+    if (squad.length < 2) return 0;
+    for (const m of squad) {
+      const best = [...m.skills].sort((x, y) => powerDamage(y.power, m.stats, m.level) - powerDamage(x.power, m.stats, m.level))[0]?.power;
+      const element = best?.element ?? 'kinetic';
+      const color = ELEMENT_COLORS[element];
+      const raw = ((best ? powerDamage(best, m.stats, m.level) : 0) * 2 + basicDamage(m.stats, m.level) * 2) * this.powerScale;
+      m.invuln = Math.max(m.invuln, 1.2);
+      m.castTimer = 0.5;
+      m.anim.cast = 0;
+      this.fx.flare(m.center, color, 9, 0.5);
+      this.fx.ring(m.pos, color, 11, 0.6);
+      this.fx.burst(m.center, color, 30, 16, 0.2);
+      for (const e of this.enemiesOf(m)) {
+        if (e.pos.distanceTo(m.pos) <= 10 + e.radius) this.damage(e, raw, m, element, 14);
+      }
+    }
+    this.fx.shake(1.2);
+    return squad.length;
   }
 
   heal(a: Actor, amount: number) {
@@ -659,6 +755,8 @@ export class Combat {
     a.sinceHit += dt;
     a.invuln = Math.max(0, a.invuln - dt);
     a.dodgeCooldown = Math.max(0, a.dodgeCooldown - dt);
+    a.perfectWindow = Math.max(0, a.perfectWindow - dt);
+    if (a.downed) this.updateDowned(a, dt);
     a.comboWindow = Math.max(0, a.comboWindow - dt);
     a.stagger = Math.max(0, a.stagger - dt);
     a.slow = Math.max(0, a.slow - dt);

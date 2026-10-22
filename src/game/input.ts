@@ -1,6 +1,6 @@
 // Keyboard, mouse, and touch input, merged into one per-frame snapshot.
 
-export type Action = 'attack' | 'dodge' | 'jump' | 'travel' | 'ultimate' | 'skill0' | 'skill1' | 'skill2' | 'skill3' | 'pause';
+export type Action = 'attack' | 'dodge' | 'jump' | 'travel' | 'swap' | 'order' | 'assault' | 'ultimate' | 'skill0' | 'skill1' | 'skill2' | 'skill3' | 'pause';
 
 const KEY_ACTIONS: Record<string, Action> = {
   KeyJ: 'attack',
@@ -9,6 +9,9 @@ const KEY_ACTIONS: Record<string, Action> = {
   KeyK: 'dodge',
   Space: 'jump',
   KeyV: 'travel',
+  Tab: 'swap',
+  KeyG: 'order',
+  KeyT: 'assault',
   KeyX: 'ultimate',
   KeyQ: 'skill0',
   KeyE: 'skill1',
@@ -41,7 +44,7 @@ export class Input {
       if (isTyping(e)) return;
       if (!e.repeat && KEY_ACTIONS[e.code]) this.pressed.add(KEY_ACTIONS[e.code]);
       this.keys.add(e.code);
-      if (e.code === 'Space' || e.code.startsWith('Arrow')) e.preventDefault();
+      if (e.code === 'Space' || e.code === 'Tab' || e.code.startsWith('Arrow')) e.preventDefault();
     });
     this.on(window, 'keyup', (e: KeyboardEvent) => this.keys.delete(e.code));
     this.on(window, 'blur', () => this.keys.clear());

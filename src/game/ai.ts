@@ -3,7 +3,7 @@
 
 import * as THREE from 'three';
 import { basicDamage } from '../core/rules';
-import type { Actor, Combat } from './combat';
+import type { Actor, Combat, SquadRole } from './combat';
 
 function cooldown(e: Actor, key: string, dt: number): number {
   e.ai[key] = (e.ai[key] ?? 0) - dt;
@@ -20,7 +20,7 @@ function steerToward(e: Actor, target: THREE.Vector3, scale = 1) {
  * teleporters sometimes blink in right after taking a hit). Flight stays a
  * player-only toggle.
  */
-function useTravel(a: Actor, combat: Combat, dt: number, dist: number, toward: THREE.Vector3): boolean {
+function useTravel(a: Actor, combat: Combat, dt: number, dist: number, toward: THREE.Vector3, target: Actor | null = null): boolean {
   const p = a.travel;
   if (!p || p.kind === 'flight' || a.busy || a.travelRemaining > 0) return false;
   if (cooldown(a, 'travel', dt) > 0) return false;
@@ -30,7 +30,7 @@ function useTravel(a: Actor, combat: Combat, dt: number, dist: number, toward: T
   // Aim the move: out of range, teleport and leap go the way the actor is heading.
   a.faceToward(toward);
   steerToward(a, toward);
-  return combat.travel(a);
+  return combat.travel(a, target);
 }
 
 /** Minions can't fly, but they'll jump and double-jump onto ledges near a target above them. */
@@ -119,7 +119,7 @@ export function updateEnemy(e: Actor, combat: Combat, dt: number) {
         flee(e, combat, dt, target, dist);
         break;
       }
-      if (useTravel(e, combat, dt, dist, target.pos)) break;
+      if (useTravel(e, combat, dt, dist, target.pos, target)) break;
       if (!e.busy) {
         // Try a power first, then a telegraphed slam, then melee.
         const ready = e.skills.map((_, i) => i).filter((i) => combat.canCast(e, i));
@@ -156,28 +156,116 @@ export function updateEnemy(e: Actor, combat: Combat, dt: number) {
   }
 }
 
-/** Companion brain: fight nearby enemies with powers and melee, otherwise stay close to the leader. */
-export function updateAlly(a: Actor, combat: Combat, dt: number, leader: Actor) {
+export type SquadOrder = 'free' | 'focus' | 'follow' | 'hold';
+
+export interface SquadContext {
+  order: SquadOrder;
+  /** The leader's current target (Focus order). */
+  focus: Actor | null;
+  /** Where to stand on Hold. */
+  holdAt: THREE.Vector3 | null;
+}
+
+const FREE: SquadContext = { order: 'free', focus: null, holdAt: null };
+
+/** Reads a teammate's kit and stats to decide how they fight. */
+export function squadRole(a: Actor): SquadRole {
+  const kinds = a.skills.map((s) => s.power.kind);
+  const st = a.stats;
+  if (kinds.includes('heal') && st.energy + st.intelligence >= 13) return 'support';
+  if (st.durability >= 8 || (kinds.includes('shield') && st.durability >= 7)) return 'tank';
+  if (kinds.filter((k) => k === 'blast' || k === 'beam').length >= 2 && st.energy >= st.strength) return 'ranged';
+  return 'striker';
+}
+
+/** Picks an enemy, spreading the squad out (except on bosses, which everyone may pile onto). */
+function chooseTarget(a: Actor, combat: Combat, role: SquadRole, ctx: SquadContext, leader: Actor): Actor | null {
+  if (ctx.order === 'focus' && ctx.focus?.alive) return ctx.focus;
+  const anchor = ctx.order === 'hold' && ctx.holdAt ? ctx.holdAt : ctx.order === 'follow' ? leader.pos : a.pos;
+  const reach = ctx.order === 'follow' ? 6 : ctx.order === 'hold' ? 12 : 28;
+  const squad = combat.squadOf(a);
+  const enemies = combat.enemiesOf(a).filter((e) => e.pos.distanceTo(anchor) <= reach);
+  if (!enemies.length) return null;
+  const score = (e: Actor) => {
+    let s = e.pos.distanceTo(a.pos);
+    const crowd = squad.filter((m) => m !== a && m.aiTarget === e).length;
+    if (e.archetype !== 'boss') s += crowd * 8;
+    if (role === 'tank' && (e.archetype === 'boss' || e.archetype === 'brute')) s -= 15;
+    if (role === 'ranged' && e.archetype === 'gunner') s -= 6;
+    // Peel enemies off the leader.
+    if (e.pos.distanceTo(leader.pos) < 4) s -= 5;
+    return s;
+  };
+  return enemies.sort((x, y) => score(x) - score(y))[0];
+}
+
+/**
+ * AI teammate. Autonomous by default: revives downed squadmates, heals,
+ * and fights by role (tanks take bosses, ranged keep distance, strikers dive,
+ * supports stay near whoever is hurt). Squad orders narrow what they do.
+ */
+export function updateAlly(a: Actor, combat: Combat, dt: number, leader: Actor, ctx: SquadContext = FREE) {
   a.moveIntent.set(0, 0, 0);
   if (!a.alive) return;
-  const target = combat.findTarget(a, 22);
-  if (!target) {
-    const toLeader = a.pos.distanceTo(leader.pos);
-    if (toLeader > 4) steerToward(a, leader.pos);
-    if (toLeader > 16) useTravel(a, combat, dt, toLeader, leader.pos);
+  const role = (a.squadRole ??= squadRole(a));
+  const squad = combat.squadOf(a);
+  const threatNear = combat.enemiesOf(a).some((e) => e.pos.distanceTo(a.pos) < 3.5);
+
+  // 1. Revive anyone down nearby (the leader first).
+  const downed = combat.actors
+    .filter((x) => x.downed && x.team === a.team && x.pos.distanceTo(a.pos) < 30)
+    .sort((x, y) => (x === leader ? -1 : y === leader ? 1 : x.pos.distanceTo(a.pos) - y.pos.distanceTo(a.pos)))[0];
+  if (downed && !threatNear) {
+    if (Math.hypot(downed.pos.x - a.pos.x, downed.pos.z - a.pos.z) > 1.6) {
+      steerToward(a, downed.pos);
+      if (downed.pos.distanceTo(a.pos) > 14) useTravel(a, combat, dt, 99, downed.pos);
+    }
     return;
   }
+
+  // 2. Supports heal the team when someone is hurting.
+  if (!a.busy) {
+    const hurt = squad.some((m) => m.hp < m.maxHp * 0.55 && m.pos.distanceTo(a.pos) < 8);
+    const healSlot = a.skills.findIndex((s) => s.power.kind === 'heal');
+    if (hurt && healSlot >= 0 && combat.canCast(a, healSlot)) {
+      combat.castPower(a, healSlot);
+      return;
+    }
+    const shieldSlot = a.skills.findIndex((s) => s.power.kind === 'shield');
+    if (role === 'tank' && shieldSlot >= 0 && a.hp < a.maxHp * 0.7 && a.sinceHit < 1 && combat.canCast(a, shieldSlot)) {
+      combat.castPower(a, shieldSlot);
+      return;
+    }
+  }
+
+  const target = chooseTarget(a, combat, role, ctx, leader);
+  a.aiTarget = target;
+
+  // 3. Nothing to fight: regroup.
+  if (!target) {
+    const home = ctx.order === 'hold' && ctx.holdAt ? ctx.holdAt : role === 'support'
+      ? (squad.filter((m) => m !== a).sort((x, y) => x.hp / x.maxHp - y.hp / y.maxHp)[0]?.pos ?? leader.pos)
+      : leader.pos;
+    const dist = a.pos.distanceTo(home);
+    if (dist > 4) steerToward(a, home);
+    if (dist > 16) useTravel(a, combat, dt, dist, home);
+    return;
+  }
+
   const gap = a.pos.distanceTo(target.pos) - a.radius - target.radius;
-  if (useTravel(a, combat, dt, gap, target.pos)) return;
+  if (role !== 'ranged' && useTravel(a, combat, dt, gap, target.pos, target)) return;
   if (!a.busy) {
     const ready = a.skills.map((_, i) => i).filter((i) => combat.canCast(a, i));
     if (ready.length && cooldown(a, 'power', dt) <= 0) {
       const slot = ready[Math.floor(Math.random() * ready.length)];
       const kind = a.skills[slot].power.kind;
       const useful = kind === 'heal' ? a.hp < a.maxHp * 0.6 : kind === 'nova' || kind === 'dash' ? gap < 6 : kind !== 'shield' || a.sinceHit < 1;
-      if (useful && combat.castPower(a, slot)) {
-        a.ai.power = 2.5 + Math.random() * 2;
-        return;
+      if (useful) {
+        a.faceToward(target.pos);
+        if (combat.castPower(a, slot)) {
+          a.ai.power = (role === 'ranged' ? 1.5 : 2.5) + Math.random() * 1.5;
+          return;
+        }
       }
     }
     if (gap < 1.4 && cooldown(a, 'attack', dt) <= 0) {
@@ -187,5 +275,15 @@ export function updateAlly(a: Actor, combat: Combat, dt: number, leader: Actor) 
       return;
     }
   }
-  if (gap > 1.2) steerToward(a, target.pos);
+
+  // 4. Positioning by role.
+  if (role === 'ranged') {
+    if (gap < 6) steerToward(a, a.pos.clone().multiplyScalar(2).sub(target.pos));
+    else if (gap > 14) steerToward(a, target.pos);
+    else {
+      const side = new THREE.Vector3(target.pos.z - a.pos.z, 0, -(target.pos.x - a.pos.x)).normalize();
+      a.moveIntent.copy(side).multiplyScalar(0.4);
+      a.faceToward(target.pos);
+    }
+  } else if (gap > 1.2) steerToward(a, target.pos);
 }

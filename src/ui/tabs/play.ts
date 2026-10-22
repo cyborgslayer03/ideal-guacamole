@@ -2,7 +2,7 @@
 // selection, faction hierarchies, relationships, and the world chronicle.
 
 import {
-  availableAllies, bond, factionOf, isHostile, missionBoard, passTime, playableHeroes, relationOf,
+  activeContracts, availableAllies, bond, factionOf, isHostile, missionSquad, missionBoard, passTime, playableHeroes, relationOf,
   type Bond, type Mission, type MissionKind, type NewsItem,
 } from '../../core/campaign';
 import { RARITY_COLORS, combatPower, ELEMENT_COLORS } from '../../core/rules';
@@ -19,6 +19,7 @@ const KIND_META: Record<MissionKind, { label: string; color: string; icon: strin
   vendetta: { label: 'Vendetta', color: '#b05cff', icon: '⚔' },
   ally: { label: 'Ally', color: '#3eff8b', icon: '✚' },
   defense: { label: 'Defense', color: '#3e9bff', icon: '⛨' },
+  teamup: { label: 'Team-Up', color: '#ff3e8a', icon: '⚡' },
 };
 
 const BOND_COLORS: Record<Bond, string> = {
@@ -30,6 +31,7 @@ const BOND_COLORS: Record<Bond, string> = {
 };
 
 const NEWS_ICONS: Record<NewsItem['kind'], string> = {
+  contract: '✔',
   mission: '◆', succession: '♛', nemesis: '⚔', ally: '✚', escape: '⛓', faction: '⚑', story: '✎', betrayal: '⚠',
 };
 
@@ -51,8 +53,14 @@ export function playTab(ctx: EditorContext): HTMLElement {
   const hero = heroes.find((x) => x.id === ctx.selection.play) ?? heroes.find((x) => x.role === 'hero') ?? heroes[0];
   if (hero) ctx.selection.play = hero.id;
   const allies = hero ? availableAllies(c, u, hero.id) : [];
-  const companion = allies.find((a) => a.id === ctx.selection.companion) ?? null;
-  ctx.selection.companion = companion?.id ?? null;
+  // Squad picks: up to three earned allies, stored as a comma list in the selection.
+  const picks = (ctx.selection.squad ?? '').split(',').filter((id) => allies.some((a) => a.id === id)).slice(0, 3);
+  ctx.selection.squad = picks.join(',');
+  const togglePick = (id: string) => {
+    const next = picks.includes(id) ? picks.filter((x) => x !== id) : [...picks, id].slice(-3);
+    ctx.selection.squad = next.join(',');
+    ctx.rerender();
+  };
 
   const showReport = (title: string, victory: boolean, news: NewsItem[]) => {
     ctx.report = { title, victory, news };
@@ -101,16 +109,29 @@ export function playTab(ctx: EditorContext): HTMLElement {
     ...heroes.map((ch) => rosterCard(ctx, ch, ch === hero, () => ((ctx.selection.play = ch.id), ctx.rerender()))),
   );
   const companionRow = h('div', { class: 'row companion-row' },
-    h('span', { class: 'field-label' }, 'Companion'),
-    h('button', { class: `chip${!companion ? ' active' : ''}`, onclick: () => ((ctx.selection.companion = null), ctx.rerender()) }, 'Solo'),
-    ...allies.map((a) => h('button', { class: `chip${a === companion ? ' active' : ''}`, onclick: () => ((ctx.selection.companion = a.id), ctx.rerender()) }, a.alias)),
-    !allies.length && h('span', { class: 'muted small' }, 'Earn allies by helping friends, sparing foes, or recruiting defeated bosses.'),
+    h('span', { class: 'field-label' }, `Squad ${picks.length}/3`),
+    h('button', { class: `chip${!picks.length ? ' active' : ''}`, onclick: () => ((ctx.selection.squad = ''), ctx.rerender()) }, 'Solo'),
+    ...allies.map((a) => h('button', { class: `chip${picks.includes(a.id) ? ' active' : ''}`, onclick: () => togglePick(a.id) }, a.alias)),
+    !allies.length && h('span', { class: 'muted small' }, 'Earn allies by helping friends, sparing foes, or recruiting defeated bosses. Team-Up missions bring a whole team.'),
+  );
+
+  // --- Contracts: rotating challenges.
+  const contracts = h('div', { class: 'contracts' },
+    ...activeContracts(c).map((k) => {
+      const done = c.contractsDone.includes(k.id);
+      return h('div', { class: `contract${done ? ' done' : ''}` },
+        h('b', null, `${done ? '✔ ' : ''}${k.title}`),
+        h('span', null, k.detail),
+        h('span', { class: 'contract-xp' }, `+${k.xp} XP`),
+      );
+    }),
+    h('div', { class: 'muted small' }, `New contracts in ${3 - ((c.turn - 1) % 3)} turn${3 - ((c.turn - 1) % 3) === 1 ? '' : 's'}`),
   );
 
   // --- Mission board.
   const missions = missionBoard(c, u);
   const board = h('div', { class: 'board' },
-    ...missions.map((m) => missionCard(ctx, m, hero ?? null, companion)),
+    ...missions.map((m) => missionCard(ctx, m, hero ?? null, picks)),
     missions.length === 0 && h('p', { class: 'muted' }, 'No missions available. Add locations, villains, or stories in the creator.'),
   );
 
@@ -161,6 +182,8 @@ export function playTab(ctx: EditorContext): HTMLElement {
     h('h3', { class: 'panel-title' }, 'Choose your hero'),
     heroes.length ? roster : h('p', { class: 'warn' }, 'Every hero is imprisoned, fallen, or turned against you. Pass time, or reset the campaign.'),
     companionRow,
+    h('h3', { class: 'panel-title' }, 'Contracts'),
+    contracts,
     h('h3', { class: 'panel-title' }, 'Missions'),
     board,
     h('div', { class: 'war-columns' },
@@ -184,7 +207,7 @@ function rosterCard(ctx: EditorContext, ch: Character, active: boolean, onClick:
   );
 }
 
-function missionCard(ctx: EditorContext, m: Mission, hero: Character | null, companion: Character | null) {
+function missionCard(ctx: EditorContext, m: Mission, hero: Character | null, picks: string[]) {
   const u = ctx.universe;
   const meta = KIND_META[m.kind];
   const reward = u.items.find((i) => i.id === m.rewardItemId);
@@ -196,7 +219,7 @@ function missionCard(ctx: EditorContext, m: Mission, hero: Character | null, com
     class: 'mission-card',
     style: `--c:${meta.color}`,
     disabled: blocked,
-    onclick: () => hero && ctx.playMission(m, hero.id, m.allyId ?? companion?.id ?? null),
+    onclick: () => hero && ctx.playMission(m, hero.id, picks),
   },
   h('div', { class: 'mission-top' },
     h('span', { class: 'mission-kind' }, `${meta.icon} ${meta.label}`),
@@ -212,6 +235,10 @@ function missionCard(ctx: EditorContext, m: Mission, hero: Character | null, com
   ),
   required && h('div', { class: 'small', style: 'color:#3eff8b' }, m.allyId === hero?.id ? `Pick another hero to help ${required.alias}` : `Fights alongside ${required.alias}`),
   ambusher && h('div', { class: 'small', style: 'color:#ff8a9c' }, `⚠ ${ambusher.alias} has been seen nearby`),
+  hero && (() => {
+    const squad = missionSquad(ctx.campaign, u, m, hero.id, picks).map((id) => u.characters.find((x) => x.id === id)?.alias).filter(Boolean);
+    return squad.length > 0 && h('div', { class: 'small squad-line' }, `Squad: ${squad.join(', ')}`);
+  })(),
   h('div', { class: 'mission-foot' },
     h('span', null, `Lv ${m.level}`),
     h('span', null, `+${m.xp} XP`),

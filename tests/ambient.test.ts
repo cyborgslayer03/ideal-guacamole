@@ -133,7 +133,7 @@ describe('patrol ambient in the campaign', () => {
     const c = createCampaign(u);
     const hero = u.characters.find((x) => x.role === 'hero')!;
     const patrol = missionBoard(c, u).find((m) => m.kind === 'patrol')!;
-    const plan = planMission(c, u, patrol, hero.id, null);
+    const plan = planMission(c, u, patrol, hero.id);
     expect(plan.ambient).not.toBeNull();
     expect(plan.ambient!.allyIds).not.toContain(hero.id);
     for (const id of patrol.targetIds) expect(plan.ambient!.villainIds).not.toContain(id);

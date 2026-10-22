@@ -65,6 +65,7 @@ Every universe has a living campaign. The mission board is generated from the cu
 | **Vendetta** | A nemesis comes for you personally. |
 | **Ally** | A friend is pinned down. Help them and they may become a companion. |
 | **Defense** | A faction at full strength attacks. Ignoring it lets them grow. |
+| **Team-Up** | A whole hero team (any hero faction, e.g. the Legends' Vanguard) assembles against a villain faction's lieutenants and leader. |
 
 - **Boss verdicts:** after a boss falls, you choose **Arrest** (they may escape later), **Spare** (earns respect), **Recruit** (they join you if they don't hate you) or **Finish** (permanent, and their faction swears revenge).
 - **Rotating bosses:** when a leader falls, a lieutenant rises to replace them. If the faction is weak, an outsider may seize the power vacuum, and if nobody is left, a brand-new villain is generated. Escaped prisoners can reclaim their throne, and ambitious lieutenants stage coups.
@@ -72,6 +73,21 @@ Every universe has a living campaign. The mission board is generated from the cu
 - **Branching stories:** chapters can end with a choice that sets a flag, and later chapters can require a flag. Instant universes include a branching story to show how it works.
 - **Deterministic:** the world runs on the campaign seed, so the same choices always lead to the same outcomes.
 - **Omni controls** (in Full detail): override faction power and relationship scores, pass time, or reset the campaign.
+
+### Team-ups and squads
+Bring up to **3 AI teammates** on any mission (pick them on the War Table from heroes who count you as an ally), or let **Team-Up** missions field a whole team. In the sandbox, **Recruit** heroes from the Omni panel.
+
+- **Autonomous AI by role:** each teammate reads their own kit. **Tanks** take bosses and brutes and raise shields, **strikers** dive in with dashes, leaps and teleports, **ranged** heroes keep their distance and kite, and **supports** stay with whoever is hurt and heal the team. The squad spreads across targets instead of piling on one, peels enemies off you, and uses movement powers to keep up.
+- **Tag-switching:** **Tab** (or tap a teammate's card) hands control to another hero mid-fight, and XP is shared by the whole squad.
+- **Downed and revive:** in squad play, heroes go down instead of out. A teammate standing beside them for 2.5 s revives them; otherwise they bleed out after 25 s. If your hero goes down, control passes to someone still standing. The mission fails only when the whole squad is down.
+- **Squad orders (G):** Free fight → Focus my target → Follow me → Hold position.
+- **Team Assault (T):** the squad's combined damage fills a gauge; when it's full, every nearby hero unleashes their strongest attack at once.
+- **Team heals:** heal powers now restore every teammate in range.
+
+### Combat polish
+- **Perfect dodge:** dodge just as a hit lands for a slow-motion moment and +15 ultimate charge.
+- **Mission grades:** S / A / B / C from time against par, damage taken, best combo and downs. Better grades give bonus XP (up to +50%).
+- **Contracts:** three rotating War Table challenges every three turns (for example "Win a Team-Up", "Earn an S grade", "Rescue an ally on patrol"), each paying a one-time XP reward.
 
 ### Ambient events (patrols and sandbox)
 While you patrol, optional incidents appear nearby and show up in the **Nearby** feed. They expire if you ignore them.
@@ -106,6 +122,9 @@ Free play, layered:
 | Powers | Q E R F (or 1–4) | Skill buttons |
 | Ultimate | X | ★ |
 | Movement power (fly / teleport / leap) | V (Space/C rise/fall when flying) | Travel button |
+| Switch hero (squad) | Tab | Tap a teammate |
+| Squad order | G | Tap the order badge |
+| Team Assault | T | ⚡ |
 | Camera | Right-drag, arrow keys, wheel | Drag |
 | Pause | Esc / P | ❚❚ |
 
@@ -172,5 +191,5 @@ tests/      Vitest: core logic, campaign rules and fuzzing, and a headless comba
 - **Hub, next steps:** comments, follows and creator profiles, remix credits, moderator tools, and cloud sync of your own library.
 - Cutscene camera moves, voiced barks, and companion banter based on relationships.
 - More enemy archetypes, elite modifiers, co-op heroes and team-up attacks.
-- Imported 3D models/animations (glTF) alongside the procedural ones.
+- Imported 3D models and animations (glTF/GLB) alongside the procedural ones.
 - Packaging as an installable mobile/desktop app (PWA or Capacitor/Tauri).

@@ -75,7 +75,7 @@ describe('mission board', () => {
   it('plans a raid as waves, then lieutenants, then the leader', () => {
     const { u, c, hero } = world();
     const raid = missionBoard(c, u).find((m) => m.kind === 'raid')!;
-    const plan = planMission(c, u, raid, hero.id, null);
+    const plan = planMission(c, u, raid, hero.id);
     expect(plan.phases[0].kind).toBe('defeat');
     const last = plan.phases[plan.phases.length - 1];
     expect(last.kind === 'bosses' && last.bossIds).toEqual([raid.targetIds[raid.targetIds.length - 1]]);
@@ -116,7 +116,7 @@ describe('boss succession', () => {
     const m = missionBoard(c, u).find((x) => x.kind === 'story')!;
     expect(m.targetIds[0]).toBeDefined();
     expect(m.targetIds[0]).not.toBe(bossId);
-    const plan = planMission(c, u, m, hero.id, null);
+    const plan = planMission(c, u, m, hero.id);
     expect(plan.intro.some((l) => l.text.includes('taken their place'))).toBe(true);
   });
 });
@@ -134,7 +134,7 @@ describe('ally / nemesis system', () => {
     expect(boss.level).toBe(startLevel + 2);
     const vendetta = missionBoard(c, u).find((x) => x.kind === 'vendetta');
     expect(vendetta?.targetIds).toEqual([bossId]);
-    expect(planMission(c, u, vendetta!, hero.id, null).bossPower[bossId]).toBeGreaterThan(1);
+    expect(planMission(c, u, vendetta!, hero.id).bossPower[bossId]).toBeGreaterThan(1);
   });
 
   it('finishing a boss makes their faction swear revenge and heroes disapprove', () => {

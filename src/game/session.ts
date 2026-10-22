@@ -8,16 +8,16 @@ import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { randomLocation } from '../core/generator';
-import type { BossOption, BossOutcome, MissionPlan, MissionResult, PatrolEvent, Phase } from '../core/missions';
+import { gradeRun, parTime, type BossOption, type BossOutcome, type MissionPlan, type MissionResult, type PatrolEvent, type Phase } from '../core/missions';
 import { Rng } from '../core/rng';
 import {
-  RARITY_COLORS, THREAT_TIERS, effectiveStats, grantXp, maxHealth, minionHealth, minionStats, resolveRules, tierById, xpReward,
+  RARITY_COLORS, THREAT_TIERS, basicDamage, effectiveStats, grantXp, maxHealth, minionHealth, minionStats, resolveRules, tierById, xpReward,
   type RuleKey, type ThreatTier,
 } from '../core/rules';
 import type { Appearance, Character, Location, Universe, UniverseRules } from '../core/types';
 import { AmbientDirector, type AmbientHost } from './ambient';
 import { h } from '../ui/dom';
-import { updateAlly, updateEnemy } from './ai';
+import { updateAlly, updateEnemy, type SquadContext, type SquadOrder } from './ai';
 import { ARENA_RADIUS, buildArena, type Arena } from './arena';
 import { Actor, Combat } from './combat';
 import { Effects } from './effects';
@@ -47,8 +47,10 @@ interface Stage {
   arena: Arena;
   combat: Combat;
   fx: Effects;
+  /** The hero the player is controlling right now (changes with tag-switching). */
   player: Actor;
-  ally: Actor | null;
+  /** AI teammates (everyone in the squad except the controlled hero). */
+  allies: Actor[];
   hud: Hud;
   location: Location;
 }
@@ -75,6 +77,10 @@ interface Run {
   ambush: 'none' | 'pending' | 'active' | 'done';
   transitioning: boolean;
   done: boolean;
+  /** Game time when the first phase began (for grading). */
+  startedAt: number;
+  damageTaken: number;
+  downs: number;
 }
 
 export class GameSession {
@@ -116,6 +122,12 @@ export class GameSession {
   private portals: { group: THREE.Group; pos: THREE.Vector3; location: Location }[] = [];
   private travelling = false;
   private feedTimer = 0;
+  private order: SquadOrder = 'free';
+  /** Sandbox: heroes recruited into the squad from the Omni panel. */
+  private sandboxSquad: string[] = [];
+  private holdAt: THREE.Vector3 | null = null;
+  /** The enemy the controlled hero last hit (for the Focus order). */
+  private focusTarget: Actor | null = null;
 
   constructor(private readonly opts: SessionOptions) {
     const character = opts.universe.characters.find((c) => c.id === opts.characterId);
@@ -167,7 +179,7 @@ export class GameSession {
     return u.locations.find((l) => l.id === id) ?? u.locations[0] ?? randomLocation(new Rng(u.seed), 'metropolis');
   }
 
-  private buildStage(location: Location, allyId: string | null) {
+  private buildStage(location: Location, allyIds: string[]) {
     this.teardownStage();
     const u = this.opts.universe;
     const sky = new THREE.Color(location.skyColor);
@@ -186,30 +198,53 @@ export class GameSession {
     const player = new Actor(c.alias, 'player', 'hero', effectiveStats(c, u.items), c.level, c.appearance, c.powers, undefined, c);
     combat.add(player);
 
-    let ally: Actor | null = null;
-    const allyChar = allyId ? u.characters.find((x) => x.id === allyId) : undefined;
-    if (allyChar) {
-      ally = new Actor(allyChar.alias, 'player', 'ally', effectiveStats(allyChar, u.items), allyChar.level, allyChar.appearance, allyChar.powers, undefined, allyChar);
-      ally.pos.set(2.5, 0, 2);
-      combat.add(ally);
-    }
+    // The AI squad forms up behind the hero.
+    const allies: Actor[] = [];
+    allyIds.forEach((id, i) => {
+      const ch = u.characters.find((x) => x.id === id);
+      if (!ch) return;
+      const a = new Actor(ch.alias, 'player', 'ally', effectiveStats(ch, u.items), ch.level, ch.appearance, ch.powers, undefined, ch);
+      a.pos.set((i - (allyIds.length - 1) / 2) * 3, 0, 3);
+      combat.add(a);
+      allies.push(a);
+    });
+    combat.downedEnabled = allies.length > 0;
 
     const hud = new Hud(player, this.input, () => this.togglePause());
-    hud.setAlly(ally);
     this.root.appendChild(hud.root);
 
     combat.onDamage = (e) => {
-      const kind = e.heal ? 'heal' : e.target === player ? 'taken' : e.crit ? 'crit' : 'normal';
+      const st = this.stage;
+      if (!st) return;
+      const controlled = st.player;
+      const kind = e.heal ? 'heal' : e.target === controlled ? 'taken' : e.crit ? 'crit' : 'normal';
       hud.damageNumber(e.target.center.add(new THREE.Vector3(0, 0.6, 0)), this.camera, e.amount, kind);
-      if (e.source === player && !e.heal) {
+      if (e.heal) return;
+      if (e.source === controlled) {
         hud.addCombo();
         if (e.crit) this.hitstop = Math.max(this.hitstop, 0.035);
+        if (e.target.team === 'enemy') this.focusTarget = e.target;
       }
-      if (e.target === player && !e.heal) fx.shake(0.15);
+      if (e.target === controlled) fx.shake(0.15);
+      if (e.target.team === 'player' && this.run) this.run.damageTaken += e.amount;
+      // The squad's combined damage charges Team Assault.
+      if (e.source?.team === 'player' && e.target.team === 'enemy' && st.allies.length) {
+        hud.teamGauge = Math.min(100, hud.teamGauge + (e.amount / (basicDamage(controlled.stats, controlled.level) * 0.9)));
+      }
     };
     combat.onKill = (target) => this.onKill(target);
+    combat.onDowned = (a) => this.onDowned(a);
+    combat.onRevived = (a, by) => this.stage?.hud.banner(`${a.name} is back up`, by ? `Revived by ${by.name}` : '', 1.6);
+    combat.onPerfectDodge = (a) => {
+      if (a !== this.stage?.player) return;
+      this.slowmo = Math.max(this.slowmo, 0.8);
+      a.ultimate = Math.min(100, a.ultimate + 15);
+      hud.banner('Perfect Dodge', '+15 ultimate charge', 1);
+    };
 
-    this.stage = { arena, combat, fx, player, ally, hud, location };
+    this.stage = { arena, combat, fx, player, allies, hud, location };
+    hud.setSquad([player, ...allies]);
+    hud.setOrder(ORDER_LABELS[this.order]);
     this.camYaw = Math.PI;
     this.camTarget.copy(player.center);
   }
@@ -334,21 +369,23 @@ export class GameSession {
   // --- Mission flow --------------------------------------------------------
 
   private async runPlan(plan: MissionPlan) {
-    this.buildStage(this.resolveLocation(plan.locationId), plan.allyId);
+    this.buildStage(this.resolveLocation(plan.locationId), plan.allyIds);
     const s = this.stage!;
     this.run = {
       plan, phase: -1, killed: 0, spawned: 0, elapsed: 0, spawnTimer: 0, bosses: [], defeated: [], beacons: [],
       ambush: plan.ambushId ? 'pending' : 'none', transitioning: true, done: false,
+      startedAt: 0, damageTaken: 0, downs: 0,
     };
     const run = this.run;
     s.hud.setObjective('');
-    s.hud.banner(plan.title, plan.subtitle, 2.6);
+    s.hud.banner(plan.title, plan.teamName ? `${plan.teamName} assemble!` : plan.subtitle, 2.6);
     this.paused = true;
     await wait(1200);
     if (this.disposed || this.run !== run) return;
     await s.hud.dialogue(plan.intro, this.opts.universe.accent);
     if (this.disposed || this.run !== run) return;
     this.paused = false;
+    run.startedAt = this.time;
     this.startPhase(0);
   }
 
@@ -446,7 +483,7 @@ export class GameSession {
       case 'survive': {
         const left = Math.max(0, phase.seconds - r.elapsed);
         if (canSpawn(6)) {
-          this.spawnMinion(this.pickMinion(level), level, factionId, s.ally?.alive ? s.ally.pos : undefined);
+          this.spawnMinion(this.pickMinion(level), level, factionId, s.allies[0]?.alive ? s.allies[0].pos : undefined);
           r.spawnTimer = 1.2;
         }
         s.hud.setObjective(`${phase.label ?? 'Survive'}  ${formatTime(left)}`);
@@ -604,9 +641,20 @@ export class GameSession {
       }
     }
 
-    // Rewards.
+    // Grade the run, then hand out rewards (bonus XP for a good grade).
+    const totalHp = [s.player, ...s.allies].reduce((t, a) => t + a.maxHp, 0) || 1;
+    const graded = gradeRun({
+      seconds: this.time - r.startedAt,
+      parSeconds: parTime(r.plan.phases),
+      damageTakenRatio: r.damageTaken / totalHp,
+      maxCombo: s.hud.maxCombo,
+      downs: r.downs,
+    });
+    const xp = Math.round(r.plan.xp * (1 + graded.xpBonus));
     const u = this.opts.universe;
-    const levels = grantXp(this.character, r.plan.xp);
+    const before = this.character.level;
+    this.grantSquadXp(xp);
+    const levels = this.character.level - before;
     const reward = u.items.find((i) => i.id === r.plan.rewardItemId);
     let rewardNote = '';
     if (reward) {
@@ -618,11 +666,13 @@ export class GameSession {
     }
     this.opts.onSave();
 
-    const result: MissionResult = { victory: true, defeatedBossIds: r.defeated, survivingBossIds: [], outcomes, choice, ambient };
+    const squadIds = [s.player, ...s.allies].map((a) => a.character?.id).filter((id): id is string => !!id && id !== this.character.id);
+    const result: MissionResult = { victory: true, defeatedBossIds: r.defeated, survivingBossIds: [], outcomes, choice, ambient, grade: graded.grade, squadIds };
     s.hud.modal(
       'Mission Complete',
       h('div', { class: 'rewards' },
-        h('div', null, `+${r.plan.xp} XP`),
+        h('div', { class: 'row' }, h('span', { class: `grade grade-${graded.grade}` }, graded.grade), h('span', { class: 'muted small' }, `Score ${graded.score} · ${formatTime(this.time - r.startedAt)} · best combo ${s.hud.maxCombo} · ${r.downs} downs`)),
+        h('div', null, `+${xp} XP${graded.xpBonus ? ` (grade bonus +${Math.round(graded.xpBonus * 100)}%)` : ''}${s.allies.length ? ' for the whole squad' : ''}`),
         levels > 0 && h('div', { class: 'reward-level' }, `LEVEL UP! Now level ${this.character.level}`),
         reward && h('div', { style: `color:${RARITY_COLORS[reward.rarity]}` }, `Reward: ${rewardNote}`),
         ambient && ambient.completed > 0 && h('div', null, `Side events handled: ${ambient.completed}`),
@@ -642,12 +692,56 @@ export class GameSession {
     const s = this.stage;
     const r = this.run;
     if (!s) return;
-    if (target === s.player) {
-      if (!r) {
-        s.hud.banner('Down!', 'Respawning...', 1.6);
-        setTimeout(() => this.respawnPlayer(), 1500);
+    const inSquad = target === s.player || s.allies.includes(target);
+    if (inSquad) {
+      // A squad member bled out. The mission goes on while anyone can still fight.
+      const standing = [s.player, ...s.allies].filter((a) => a.alive || a.downed);
+      if (standing.length) {
+        s.hud.banner(`${target.name} is out`, 'Keep fighting', 1.6);
+        if (target === s.player) this.swapHero();
         return;
       }
+      this.squadWiped();
+      return;
+    }
+    if (this.helpers.includes(target)) {
+      s.hud.banner(`${target.name} is down!`, '', 1.6);
+      return;
+    }
+    if (target.archetype === 'boss') {
+      this.slowmo = 1;
+      if (r && target.character && !r.defeated.includes(target.character.id)) r.defeated.push(target.character.id);
+      this.refreshBossBar();
+    } else if (r) r.killed++;
+    this.grantSquadXp(xpReward(target.level, target.archetype === 'boss') * (this.opts.plan ? 1 : this.tier.xp));
+    s.combat.schedule(1.4, () => {
+      if (this.stage === s) s.combat.remove(target);
+    });
+  }
+
+  /** A squad member went down (revivable). Hands control to someone still standing. */
+  private onDowned(a: Actor) {
+    const s = this.stage;
+    if (!s) return;
+    if (this.run) this.run.downs++;
+    s.hud.banner(`${a.name} is down!`, 'A teammate can revive them', 1.6);
+    if (a !== s.player) return;
+    const next = s.allies.find((x) => x.alive);
+    if (next) setTimeout(() => this.stage === s && s.player === a && !a.alive && this.swapHero(next), 900);
+    else this.squadWiped();
+  }
+
+  /** Everyone is down: fail the mission (or, in the sandbox, respawn the squad). */
+  private squadWiped() {
+    const s = this.stage;
+    const r = this.run;
+    if (!s) return;
+    if (!r) {
+      s.hud.banner('Down!', 'Respawning...', 1.6);
+      setTimeout(() => this.respawnPlayer(), 1500);
+      return;
+    }
+    {
       this.slowmo = 1.5;
       setTimeout(() => {
         if (this.disposed || this.stage !== s || this.run !== r) return;
@@ -660,22 +754,76 @@ export class GameSession {
           { label: 'Retreat', onClick: () => this.finishFailure(r, surviving) },
         ]);
       }, 1400);
+    }
+  }
+
+  // --- Squad -------------------------------------------------------------------
+
+  /** Hands control to another squad member (Tab), or to `to` if given. */
+  private swapHero(to?: Actor) {
+    const s = this.stage;
+    if (!s || !s.allies.length) return;
+    const squad = [s.player, ...s.allies];
+    const start = squad.indexOf(s.player);
+    const next = to ?? squad.slice(start + 1).concat(squad.slice(0, start)).find((a) => a.alive);
+    if (!next || next === s.player) return;
+    const prev = s.player;
+    prev.archetype = 'ally';
+    prev.moveIntent.set(0, 0, 0);
+    prev.squadRole = null;
+    next.archetype = 'hero';
+    next.moveIntent.set(0, 0, 0);
+    s.player = next;
+    s.allies = squad.filter((a) => a !== next);
+    s.hud.setPlayer(next);
+    s.hud.banner(next.name, 'You are in control', 1.1);
+    this.focusTarget = null;
+  }
+
+  private cycleOrder() {
+    const s = this.stage;
+    if (!s || !s.allies.length) return;
+    const orders: SquadOrder[] = ['free', 'focus', 'follow', 'hold'];
+    this.order = orders[(orders.indexOf(this.order) + 1) % orders.length];
+    this.holdAt = this.order === 'hold' ? s.player.pos.clone() : null;
+    s.hud.setOrder(ORDER_LABELS[this.order]);
+    s.hud.banner('Squad order', ORDER_LABELS[this.order], 1.1);
+  }
+
+  private teamAssault() {
+    const s = this.stage;
+    if (!s || !s.allies.length) return;
+    if (s.hud.teamGauge < 100) {
+      s.hud.banner('Team Assault charging', `${Math.floor(s.hud.teamGauge)}%`, 0.9);
       return;
     }
-    if (target === s.ally || this.helpers.includes(target)) {
-      s.hud.banner(`${target.name} is down!`, '', 1.6);
+    const n = s.combat.teamAssault(s.player);
+    if (n < 2) {
+      s.hud.banner('Team Assault', 'Get closer to your team', 1.1);
       return;
     }
-    if (target.archetype === 'boss') {
-      this.slowmo = 1;
-      if (r && target.character && !r.defeated.includes(target.character.id)) r.defeated.push(target.character.id);
-      this.refreshBossBar();
-    } else if (r) r.killed++;
-    const levels = grantXp(this.character, xpReward(target.level, target.archetype === 'boss') * (this.opts.plan ? 1 : this.tier.xp));
-    if (levels > 0) this.applyLevelUp();
-    s.combat.schedule(1.4, () => {
-      if (this.stage === s) s.combat.remove(target);
-    });
+    s.hud.teamGauge = 0;
+    this.slowmo = 1;
+    s.hud.banner('Team Assault!', [s.player, ...s.allies].filter((a) => a.alive).map((a) => a.name).join(' · '), 1.8);
+  }
+
+  /** XP is shared by the whole squad (so tag-switching never costs progress). */
+  private grantSquadXp(amount: number) {
+    const s = this.stage;
+    if (!s) return;
+    const members = [s.player, ...s.allies].filter((a) => a.character);
+    for (const a of members) {
+      const levels = grantXp(a.character!, amount);
+      if (levels > 0) {
+        if (a === s.player) this.applyLevelUp();
+        else {
+          a.level = a.character!.level;
+          a.maxHp = maxHealth(a.stats, a.level);
+          a.hp = a.alive ? a.maxHp : a.hp;
+        }
+      }
+    }
+    if (!members.some((a) => a.character === this.character)) grantXp(this.character, amount);
   }
 
   private finishFailure(r: Run, surviving: string[]) {
@@ -687,7 +835,7 @@ export class GameSession {
     const s = this.stage;
     if (!s) return;
     const p = s.player;
-    p.level = this.character.level;
+    p.level = p.character?.level ?? this.character.level;
     p.maxHp = maxHealth(p.stats, p.level);
     p.hp = p.maxHp;
     p.energy = p.maxEnergy;
@@ -697,17 +845,52 @@ export class GameSession {
     this.opts.onSave();
   }
 
+  /** Sandbox: bring the whole squad back to the center at full strength. */
   private respawnPlayer() {
     const s = this.stage;
     if (!s || this.disposed) return;
-    const p = s.player;
-    p.alive = true;
-    p.hp = p.maxHp;
-    p.energy = p.maxEnergy;
-    p.invuln = 2;
-    p.model.root.rotation.x = 0;
-    p.pos.set(0, 0, 0);
-    s.fx.flare(p.center, '#ffffff', 3, 0.5);
+    [s.player, ...s.allies].forEach((p, i) => {
+      p.alive = true;
+      p.downed = false;
+      p.hp = p.maxHp;
+      p.energy = p.maxEnergy;
+      p.invuln = 2;
+      p.model.root.rotation.x = 0;
+      p.pos.set(i * 2.5, 0, i ? 3 : 0);
+      s.fx.flare(p.center, '#ffffff', 3, 0.5);
+    });
+  }
+
+  /** Sandbox: recruit a hero into the AI squad on the spot. */
+  private addToSquad(ch: Character) {
+    const s = this.stage;
+    if (!s || s.allies.length >= 3 || [s.player, ...s.allies].some((a) => a.character?.id === ch.id)) return;
+    const u = this.opts.universe;
+    const a = new Actor(ch.alias, 'player', 'ally', effectiveStats(ch, u.items), ch.level, ch.appearance, ch.powers, undefined, ch);
+    a.pos.copy(s.player.pos).add(new THREE.Vector3(2.5, 0, 2.5));
+    s.combat.add(a);
+    s.allies.push(a);
+    s.combat.downedEnabled = true;
+    s.fx.flare(a.center, ch.appearance.accent, 3, 0.5);
+    this.sandboxSquad = [s.player, ...s.allies].map((x) => x.character!.id).filter((id) => id !== this.character.id);
+    s.hud.setSquad([s.player, ...s.allies]);
+    s.hud.setOrder(ORDER_LABELS[this.order]);
+  }
+
+  private dismissSquad() {
+    const s = this.stage;
+    if (!s) return;
+    // Take back control of the original hero first.
+    const hero = [s.player, ...s.allies].find((a) => a.character?.id === this.character.id);
+    if (hero && hero !== s.player) this.swapHero(hero);
+    for (const a of s.allies) {
+      s.fx.flare(a.center, '#ffffff', 2, 0.3);
+      s.combat.remove(a);
+    }
+    s.allies = [];
+    s.combat.downedEnabled = false;
+    this.sandboxSquad = [];
+    s.hud.setSquad([s.player]);
   }
 
   // --- Ambient events ---------------------------------------------------------
@@ -718,7 +901,7 @@ export class GameSession {
     const s = this.stage;
     if (!s) return;
     const u = this.opts.universe;
-    const busy = new Set([this.character.id, s.ally?.character?.id]);
+    const busy = new Set([this.character.id, ...[s.player, ...s.allies].map((a) => a.character?.id)]);
     const cast = (ids: string[] | null, fallback: (c: Character) => boolean) =>
       (ids ? ids.map((id) => u.characters.find((c) => c.id === id)).filter((c): c is Character => !!c) : u.characters.filter(fallback)).filter((c) => !busy.has(c.id));
     const level = () => this.run?.plan.level ?? this.spawnLevel;
@@ -782,7 +965,7 @@ export class GameSession {
 
   private startSandbox(locationId: string | null) {
     const location = this.resolveLocation(locationId);
-    this.buildStage(location, null);
+    this.buildStage(location, this.sandboxSquad);
     const s = this.stage!;
     s.hud.banner(locationId ? `Entering ${location.name}` : 'Omni Sandbox', locationId ? `${this.tier.label} threat` : 'You are the One Above All', 2.4);
     s.hud.setObjective(`Free play · ${location.name}`);
@@ -862,6 +1045,8 @@ export class GameSession {
     const levelLabel = h('span', null, String(this.spawnLevel));
     const bosses = u.characters.filter((c) => c.id !== this.character.id);
     const bossSelect = h('select', null, ...bosses.map((c) => h('option', { value: c.id }, `${c.alias} (${c.role})`)));
+    const heroes = u.characters.filter((c) => c.id !== this.character.id && c.role !== 'villain');
+    const squadSelect = h('select', null, ...heroes.map((c) => h('option', { value: c.id }, c.alias)));
 
     const tierHint = h('div', { class: 'omni-hint' });
     const tierChips = h('div', { class: 'omni-tiers' });
@@ -938,6 +1123,17 @@ export class GameSession {
           },
         }, 'Summon')),
       h('button', { class: 'btn', onclick: () => this.clearEnemies() }, 'Clear enemies'),
+      h('div', { class: 'omni-section' }, 'Squad'),
+      heroes.length > 0 && h('div', { class: 'omni-row' }, squadSelect,
+        h('button', {
+          class: 'btn primary',
+          onclick: () => {
+            const ch = heroes.find((c) => c.id === squadSelect.value);
+            if (ch) this.addToSquad(ch);
+          },
+        }, 'Recruit')),
+      h('div', { class: 'omni-hint' }, 'Up to 3 AI teammates. Tab switches hero, G gives orders, T fires a Team Assault.'),
+      h('button', { class: 'btn', onclick: () => this.dismissSquad() }, 'Dismiss squad'),
       h('div', { class: 'omni-section' }, 'Ambient events'),
       h('label', { class: 'omni-row' },
         h('input', {
@@ -1046,7 +1242,8 @@ export class GameSession {
     if (!this.paused) {
       this.controlPlayer(s, dt);
       for (const a of s.combat.actors) if (a.team === 'enemy') updateEnemy(a, s.combat, dt);
-      if (s.ally) updateAlly(s.ally, s.combat, dt, s.player);
+      const ctx: SquadContext = { order: this.order, focus: this.focusTarget, holdAt: this.holdAt };
+      for (const ally of s.allies) updateAlly(ally, s.combat, dt, s.player, ctx);
       for (const helper of this.helpers) updateAlly(helper, s.combat, dt, s.player);
       this.ambient?.update(dt);
       if (!this.run) this.checkPortals(s);
@@ -1057,7 +1254,7 @@ export class GameSession {
       for (const a of s.combat.actors) {
         if (!a.alive) {
           a.model.root.rotation.x = Math.max(-Math.PI / 2, a.model.root.rotation.x - dt * 5);
-          if (a.model.root.rotation.x <= -Math.PI / 2 + 0.01 && a !== s.ally) a.model.root.position.y -= dt * 0.8;
+          if (a.model.root.rotation.x <= -Math.PI / 2 + 0.01 && a.team !== 'player') a.model.root.position.y -= dt * 0.8;
         }
       }
     }
@@ -1090,7 +1287,7 @@ export class GameSession {
 
     if (!p.alive) {
       // Drain queued presses so nothing fires on respawn.
-      for (const a of ['attack', 'dodge', 'jump', 'travel', 'ultimate', 'skill0', 'skill1', 'skill2', 'skill3'] as const) input.consume(a);
+      for (const a of ['attack', 'dodge', 'jump', 'travel', 'swap', 'order', 'assault', 'ultimate', 'skill0', 'skill1', 'skill2', 'skill3'] as const) input.consume(a);
       p.moveIntent.set(0, 0, 0);
       return;
     }
@@ -1099,6 +1296,9 @@ export class GameSession {
       else s.combat.jump(p);
     }
     if (input.consume('travel')) s.combat.travel(p);
+    if (input.consume('swap')) this.swapHero();
+    if (input.consume('order')) this.cycleOrder();
+    if (input.consume('assault')) this.teamAssault();
     if (input.consume('dodge')) s.combat.dodge(p);
     if (input.consume('ultimate') && s.combat.ultimate(p)) this.slowmo = 0.5;
     for (let i = 0; i < 4; i++) if (input.consume(`skill${i}` as 'skill0')) s.combat.castPower(p, i);
@@ -1143,6 +1343,13 @@ export class GameSession {
     this.root.remove();
   }
 }
+
+const ORDER_LABELS: Record<SquadOrder, string> = {
+  free: 'Free fight',
+  focus: 'Focus my target',
+  follow: 'Follow me',
+  hold: 'Hold position',
+};
 
 function phaseLabel(p: Phase, u: Universe): string {
   switch (p.kind) {

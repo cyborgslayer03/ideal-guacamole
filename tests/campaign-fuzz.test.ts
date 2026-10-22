@@ -17,7 +17,7 @@ describe('campaign fuzz', () => {
         if (!heroes.length || !board.length) break;
         const hero = rng.pick(heroes);
         const m = rng.pick(board);
-        const plan = planMission(c, u, m, hero.id, null);
+        const plan = planMission(c, u, m, hero.id);
         expect(plan.phases.length).toBeGreaterThan(0);
         const victory = rng.chance(0.75);
         const bosses = [...m.targetIds, ...(m.ambushId ? [m.ambushId] : [])];

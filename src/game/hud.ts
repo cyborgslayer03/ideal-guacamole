@@ -4,7 +4,7 @@
 import * as THREE from 'three';
 import { ELEMENT_COLORS, xpForLevel } from '../core/rules';
 import type { DialogueLine, PowerKind } from '../core/types';
-import { h, type Child } from '../ui/dom';
+import { h, setChildren, type Child } from '../ui/dom';
 import type { Actor } from './combat';
 import type { FeedEntry } from './ambient';
 import type { Action, Input } from './input';
@@ -28,9 +28,14 @@ export class Hud {
   private readonly hpText = h('span', { class: 'bar-text' });
   private readonly enFill = h('div', { class: 'bar-fill energy' });
   private readonly xpFill = h('div', { class: 'bar-fill xp' });
-  private readonly allyPanel = h('div', { class: 'hud-ally hidden' });
-  private readonly allyFill = h('div', { class: 'bar-fill hp' });
-  private ally: Actor | null = null;
+  private readonly squadPanel = h('div', { class: 'hud-squad hidden' });
+  private squad: { actor: Actor; el: HTMLElement; fill: HTMLElement; status: HTMLElement }[] = [];
+  private readonly nameEl = h('span');
+  private readonly controlsEl = h('div', { class: 'hud-controls' });
+  private assaultButton: HTMLElement | null = null;
+  private readonly orderEl = h('button', { class: 'hud-order hidden', title: 'Change squad order (G)' });
+  /** 0-100; the session fills it as the squad deals damage. */
+  teamGauge = 0;
   private readonly feedEl = h('div', { class: 'ambient-feed hidden' });
   private readonly labelLayer = h('div', { class: 'dmg-layer' });
   private labelEls = new Map<string, HTMLElement>();
@@ -53,52 +58,38 @@ export class Hud {
   private travelButton: HTMLElement | null = null;
   private barEls = new Map<Actor, HTMLElement>();
   private combo = 0;
+  /** Longest combo this stage (for mission grading). */
+  maxCombo = 0;
   private comboTimer = 0;
   private ghostHp = 1;
 
+  private readonly press: (action: Action) => (e: Event) => void;
+
   constructor(
-    private readonly player: Actor,
+    private player: Actor,
     private readonly input: Input,
     onPause: () => void,
   ) {
-    const press = (action: Action) => (e: Event) => {
+    this.press = (action: Action) => (e: Event) => {
       e.preventDefault();
       e.stopPropagation();
       input.press(action);
     };
 
     const playerPanel = h('div', { class: 'hud-player' },
-      h('div', { class: 'hud-name' }, this.levelEl, h('span', null, player.name)),
+      h('div', { class: 'hud-name' }, this.levelEl, this.nameEl),
       h('div', { class: 'bar big' }, this.hpGhost, this.hpFill, this.hpText),
       h('div', { class: 'bar small' }, this.enFill),
       h('div', { class: 'bar tiny' }, this.xpFill),
-      this.allyPanel,
+      this.squadPanel,
+      this.orderEl,
     );
 
     this.bossBar.append(this.bossName, h('div', { class: 'bar boss-track' }, this.bossFill));
-
-    const keyHints = ['Q', 'E', 'R', 'F'];
-    const skills = player.skills.map((s, slot) => {
-      const color = ELEMENT_COLORS[s.power.element];
-      const el = h('button', {
-        class: `skill skill-${slot}`,
-        style: `--c:${color}`,
-        title: `${s.power.name} (${s.power.kind}, ${s.power.element})`,
-        onpointerdown: press(`skill${slot}` as Action),
-      }, h('span', { class: 'skill-icon' }, KIND_ICON[s.power.kind]), h('span', { class: 'key' }, keyHints[slot]));
-      this.skillButtons.push({ el, slot });
-      return el;
-    });
-
-    this.ultButton = h('button', { class: 'skill ult', onpointerdown: press('ultimate') }, h('span', { class: 'skill-icon' }, '★'), h('span', { class: 'key' }, 'X'));
-    const controls = h('div', { class: 'hud-controls' },
-      h('button', { class: 'skill attack', onpointerdown: press('attack') }, h('span', { class: 'skill-icon' }, '✊'), h('span', { class: 'key' }, 'J')),
-      h('button', { class: 'skill dodge', onpointerdown: press('dodge') }, h('span', { class: 'skill-icon' }, '»'), h('span', { class: 'key' }, '⇧')),
-      h('button', { class: 'skill jump', onpointerdown: press('jump') }, h('span', { class: 'skill-icon' }, '⤒'), h('span', { class: 'key' }, '␣')),
-      this.buildTravelButton(press),
-      this.ultButton,
-      ...skills,
-    );
+    this.orderEl.addEventListener('pointerdown', this.press('order'));
+    this.ultButton = h('button', { class: 'skill ult', onpointerdown: this.press('ultimate') }, h('span', { class: 'skill-icon' }, '★'), h('span', { class: 'key' }, 'X'));
+    this.buildControls();
+    const controls = this.controlsEl;
 
     const top = h('div', { class: 'hud-top' },
       playerPanel,
@@ -111,6 +102,74 @@ export class Hud {
     this.root.append(this.labelLayer, this.enemyBars, this.numbers, top, this.feedEl, this.comboEl, controls, this.sidePanel, this.bannerEl, this.dialogueEl, this.modalEl);
     if (isTouch()) this.root.append(this.buildJoystick());
     else this.root.append(h('div', { class: 'hud-hint' }, 'WASD move · J/Click attack · Shift dodge · Space jump · Q E R F powers · V movement power · X ultimate · Right-drag camera'));
+  }
+
+  /** Skill buttons for whoever the player currently controls. */
+  private buildControls() {
+    const press = this.press;
+    const keyHints = ['Q', 'E', 'R', 'F'];
+    this.skillButtons = [];
+    const skills = this.player.skills.map((s, slot) => {
+      const color = ELEMENT_COLORS[s.power.element];
+      const el = h('button', {
+        class: `skill skill-${slot}`,
+        style: `--c:${color}`,
+        title: `${s.power.name} (${s.power.kind}, ${s.power.element})`,
+        onpointerdown: press(`skill${slot}` as Action),
+      }, h('span', { class: 'skill-icon' }, KIND_ICON[s.power.kind]), h('span', { class: 'key' }, keyHints[slot]));
+      this.skillButtons.push({ el, slot });
+      return el;
+    });
+    this.travelButton = null;
+    this.controlsEl.replaceChildren(
+      h('button', { class: 'skill attack', onpointerdown: press('attack') }, h('span', { class: 'skill-icon' }, '✊'), h('span', { class: 'key' }, 'J')),
+      h('button', { class: 'skill dodge', onpointerdown: press('dodge') }, h('span', { class: 'skill-icon' }, '»'), h('span', { class: 'key' }, '⇧')),
+      h('button', { class: 'skill jump', onpointerdown: press('jump') }, h('span', { class: 'skill-icon' }, '⤒'), h('span', { class: 'key' }, '␣')),
+      ...[this.buildTravelButton(press)].filter((x): x is HTMLElement => !!x),
+      this.ultButton,
+      ...(this.assaultButton ? [this.assaultButton] : []),
+      ...skills,
+    );
+    this.nameEl.textContent = this.player.name;
+    this.ghostHp = this.player.hp / this.player.maxHp;
+  }
+
+  /** Tag-switching: the HUD follows whichever hero the player now controls. */
+  setPlayer(actor: Actor) {
+    this.player = actor;
+    this.buildControls();
+    this.renderSquadOrder();
+  }
+
+  /** Squad members (the controlled hero included) shown under the player's bars. */
+  setSquad(members: Actor[]) {
+    this.squad = members.map((actor) => {
+      const fill = h('div', { class: 'bar-fill hp' });
+      const status = h('span', { class: 'squad-status' });
+      // Tap a teammate to take control of them (handy on touch screens).
+      const el = h('button', { class: 'squad-member', title: `Switch to ${actor.name} (Tab)`, onpointerdown: this.press('swap') },
+        h('span', { class: 'squad-name' }, actor.name), status, h('div', { class: 'bar small' }, fill));
+      return { actor, el, fill, status };
+    });
+    this.renderSquadOrder();
+    this.squadPanel.classList.toggle('hidden', members.length < 2);
+    if (members.length >= 2 && !this.assaultButton) {
+      this.assaultButton = h('button', { class: 'skill assault', title: 'Team Assault (T)', onpointerdown: this.press('assault') },
+        h('span', { class: 'skill-icon' }, '⚡'), h('span', { class: 'key' }, 'T'));
+      this.buildControls();
+    }
+  }
+
+  private renderSquadOrder() {
+    setChildren(this.squadPanel,
+      ...this.squad.filter((m) => m.actor !== this.player).map((m) => m.el),
+      this.squad.length >= 2 && !isTouch() && h('div', { class: 'squad-hint' }, 'Tab switch hero · G squad order · T Team Assault'),
+    );
+  }
+
+  setOrder(label: string) {
+    this.orderEl.textContent = `Squad: ${label}`;
+    this.orderEl.classList.toggle('hidden', this.squad.length < 2);
   }
 
   private buildTravelButton(press: (a: Action) => (e: Event) => void): HTMLElement | null {
@@ -163,11 +222,6 @@ export class Hud {
     return base;
   }
 
-  setAlly(ally: Actor | null) {
-    this.ally = ally;
-    this.allyPanel.classList.toggle('hidden', !ally);
-    if (ally) this.allyPanel.replaceChildren(h('span', null, ally.name), h('div', { class: 'bar small' }, this.allyFill));
-  }
 
   /** Vertical list of choices with descriptions; resolves with the picked index. */
   choose(title: string, prompt: string, options: { label: string; detail?: string; disabled?: boolean }[]): Promise<number> {
@@ -223,6 +277,7 @@ export class Hud {
 
   addCombo() {
     this.combo++;
+    this.maxCombo = Math.max(this.maxCombo, this.combo);
     this.comboTimer = 2.5;
     this.comboEl.classList.remove('hidden', 'pop');
     void this.comboEl.offsetWidth;
@@ -325,9 +380,17 @@ export class Hud {
     }
     this.ultButton.classList.toggle('ready', p.ultimate >= 100);
 
-    if (this.ally) {
-      this.allyFill.style.width = `${(this.ally.hp / this.ally.maxHp) * 100}%`;
-      this.allyPanel.classList.toggle('down', !this.ally.alive);
+    for (const m of this.squad) {
+      const a = m.actor;
+      m.fill.style.width = `${(a.hp / a.maxHp) * 100}%`;
+      m.el.classList.toggle('down', !a.alive);
+      m.status.textContent = a.downed
+        ? a.reviveProgress > 0 ? `Reviving ${Math.round((a.reviveProgress / 2.5) * 100)}%` : `DOWN ${Math.ceil(a.bleedOut)}s`
+        : a.alive ? '' : 'Out';
+    }
+    if (this.assaultButton) {
+      this.assaultButton.style.setProperty('--cd', String(1 - this.teamGauge / 100));
+      this.assaultButton.classList.toggle('ready', this.teamGauge >= 100);
     }
     if (this.bossTarget) this.bossFill.style.width = `${(this.bossTarget.hp / this.bossTarget.maxHp) * 100}%`;
 
