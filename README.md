@@ -77,13 +77,30 @@ The hub is where players publish and download universes, characters, stories and
 ```bash
 npm run hub        # API on http://localhost:8787 (data in ./hub-data)
 npm run dev        # game on :5173; /api is proxied to the hub
-npm start          # production: build the game and serve game + API on one port
+npm start          # production: build everything and serve game + API on one port
 ```
 
-Environment variables for `server/main.ts`: `PORT`, `HUB_DATA_DIR`, `STATIC_DIR` (serve the built game), `CORS_ORIGIN` (allow a game hosted elsewhere), and `TRUST_PROXY=1` (behind a reverse proxy). To point a game at a hub on another host, set **Settings → Hub server** on the home screen, e.g. `https://hub.example.com/api`.
+Environment variables for `server/main.ts`: `PORT`, `DATABASE_URL` (PostgreSQL; otherwise file storage), `DATABASE_SSL=1` (TLS for external database URLs), `HUB_DATA_DIR`, `STATIC_DIR` (serve the built game), `CORS_ORIGIN` (allow a game hosted elsewhere), and `TRUST_PROXY=1` (behind a reverse proxy). To point a game at a hub on another host, set **Settings → Hub server** on the home screen, e.g. `https://hub.example.com/api`.
+
+### Deploying to Render
+`render.yaml` is a Render Blueprint that creates one **web service** (the game and hub API on one port) and one **PostgreSQL** database, with `DATABASE_URL` wired between them.
+
+1. Sign in at [render.com](https://render.com) and connect your GitHub account.
+2. Click **New → Blueprint**, pick this repository, and pick the branch to deploy (`main` once the PR is merged).
+3. Review the two resources and click **Apply**. The first build takes a few minutes.
+4. Open the service's `onrender.com` URL. `/api/health` should return `{"ok":true}`.
+
+Every push to the deployed branch redeploys automatically. Database migrations run on startup and are safe if several instances start at once.
+
+Plans: the Blueprint uses Render's free tiers. Free web services sleep when idle, so the first visit after a while takes about a minute. Free databases expire after Render's trial period, so change the database `plan` in `render.yaml` (for example `basic-256mb`) or in the dashboard before inviting real players.
+
+### Hub storage
+- With `DATABASE_URL` set, the hub uses **PostgreSQL** (`server/pg-store.ts`): users, sessions (expire after 30 days), listings with their bundles as `jsonb`, likes and reports, and numbered migrations under an advisory lock.
+- Without it, the hub stores everything in JSON files under `HUB_DATA_DIR`, which is fine for local play.
+- To run the hub tests against a real database, point `HUB_TEST_DATABASE_URL` at a disposable Postgres database (its tables are dropped): `HUB_TEST_DATABASE_URL=postgres://localhost/hub_test npm test`.
 
 ### How it's built
-- `server/` is plain `node:http` with no framework or database. Users, sessions and listings live in a JSON file, and uploads are stored as individual bundle files. Everything goes through the `HubStore` interface, so a database such as Postgres can replace it later.
+- `server/` is plain `node:http` with no web framework. Storage goes through the async `HubStore` interface, which has two implementations: PostgreSQL for production and JSON files for local use.
 - Every upload is validated with the same `parseBundle` / `normalizeUniverse` code the game uses for imports. Downloads are validated again on the client.
 - Passwords are hashed with scrypt, and session tokens are random and stored only as SHA-256 hashes. Request bodies are capped at 2 MB, and requests are rate-limited per IP, with tighter limits on writes.
 - `src/online/protocol.ts` is the API contract shared by `src/online/client.ts` and the server.
@@ -108,7 +125,7 @@ tests/      Vitest: core logic, campaign rules and fuzzing, and a headless comba
 
 ## Roadmap
 
-- **Hub, next steps:** a hosted deployment with a real database, comments, follows and creator profiles, remix credits, moderator tools, and cloud sync of your own library.
+- **Hub, next steps:** comments, follows and creator profiles, remix credits, moderator tools, and cloud sync of your own library.
 - Cutscene camera moves, voiced barks, and companion banter based on relationships.
 - More enemy archetypes, elite modifiers, co-op heroes and team-up attacks.
 - Imported 3D models/animations (glTF) alongside the procedural ones.

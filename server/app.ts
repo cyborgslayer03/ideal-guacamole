@@ -12,10 +12,11 @@ import {
   HUB_API_VERSION, LIMITS, normalizeTags,
   type AuthResponse, type ContentDetail, type ContentSummary, type HubUser, type ListResponse, type SortOrder,
 } from '../src/online/protocol';
-import { newHubId, type ContentRecord, type HubStore, type UserRecord } from './store';
+import { DuplicateHandleError, newHubId, type ContentRecord, type HubStore, type UserRecord } from './store';
 
 const scryptAsync = promisify(scrypt) as (password: string, salt: Buffer, keylen: number) => Promise<Buffer>;
 const KINDS: BundleKind[] = ['universe', 'character', 'item', 'story'];
+const SORTS: SortOrder[] = ['new', 'top', 'downloads'];
 
 export interface HubOptions {
   store: HubStore;
@@ -125,46 +126,43 @@ export function createHub(opts: HubOptions): Server {
 
   const toUser = (u: UserRecord): HubUser => ({ id: u.id, handle: u.handle, createdAt: u.createdAt });
 
-  const summarize = (c: ContentRecord, viewerId: string | null): ContentSummary => {
-    const author = store.getUser(c.authorId);
-    return {
-      id: c.id,
-      kind: c.kind,
-      name: c.name,
-      description: c.description,
-      tags: c.tags,
-      author: { id: c.authorId, handle: author?.handle ?? 'unknown' },
-      version: c.version,
-      downloads: c.downloads,
-      likes: c.likedBy.length,
-      liked: !!viewerId && c.likedBy.includes(viewerId),
-      preview: c.preview,
-      createdAt: c.createdAt,
-      updatedAt: c.updatedAt,
-    };
-  };
+  const summarize = (c: ContentRecord): ContentSummary => ({
+    id: c.id,
+    kind: c.kind,
+    name: c.name,
+    description: c.description,
+    tags: c.tags,
+    author: { id: c.authorId, handle: c.authorHandle },
+    version: c.version,
+    downloads: c.downloads,
+    likes: c.likes,
+    liked: c.liked,
+    preview: c.preview,
+    createdAt: c.createdAt,
+    updatedAt: c.updatedAt,
+  });
 
-  const viewer = (req: IncomingMessage): UserRecord | null => {
+  const viewer = async (req: IncomingMessage): Promise<UserRecord | null> => {
     const auth = req.headers.authorization ?? '';
     const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
     if (!token) return null;
-    const session = store.findSession(sha256(token));
-    return session ? store.getUser(session.userId) ?? null : null;
+    const userId = await store.findSessionUser(sha256(token));
+    return userId ? (await store.getUser(userId)) ?? null : null;
   };
 
-  const requireUser = (req: IncomingMessage): UserRecord => {
-    const u = viewer(req);
+  const requireUser = async (req: IncomingMessage): Promise<UserRecord> => {
+    const u = await viewer(req);
     if (!u) throw new HttpError(401, 'Sign in to do that.');
     return u;
   };
 
-  const openSession = (user: UserRecord): AuthResponse => {
+  const openSession = async (user: UserRecord): Promise<AuthResponse> => {
     const token = randomBytes(32).toString('base64url');
-    store.addSession({ tokenHash: sha256(token), userId: user.id, createdAt: Date.now() });
+    await store.addSession(sha256(token), user.id, Date.now());
     return { token, user: toUser(user) };
   };
 
-  const validatePublish = (body: unknown) => {
+  const validatePublish = (body: unknown, author: UserRecord) => {
     let bundle;
     try {
       bundle = parseBundle(JSON.stringify((body as Record<string, unknown>)?.bundle ?? null));
@@ -175,16 +173,18 @@ export function createHub(opts: HubOptions): Server {
     if (!u.characters.length && !u.items.length && !u.stories.length && !u.locations.length) {
       throw new HttpError(400, 'That bundle is empty.');
     }
-    return {
-      bundle,
-      description: str(body, 'description').slice(0, LIMITS.description),
-      tags: normalizeTags((body as Record<string, unknown>)?.tags),
-    };
+    bundle.author = author.handle;
+    const name = bundle.name || u.name;
+    const description = str(body, 'description').slice(0, LIMITS.description);
+    const tags = normalizeTags((body as Record<string, unknown>)?.tags);
+    const preview = previewBundle(bundle);
+    const searchText = [name, description, author.handle, ...tags, ...u.characters.map((c) => c.alias)].join(' ').toLowerCase();
+    return { bundle, fields: { name, description, tags, preview, searchText } };
   };
 
-  const ownContent = (req: IncomingMessage, id: string) => {
-    const user = requireUser(req);
-    const c = store.getContent(id);
+  const ownContent = async (req: IncomingMessage, id: string) => {
+    const user = await requireUser(req);
+    const c = await store.getContent(id, user.id);
     if (!c) throw new HttpError(404, 'Not found.');
     if (c.authorId !== user.id) throw new HttpError(403, 'Only the creator can change this.');
     return { user, c };
@@ -196,7 +196,14 @@ export function createHub(opts: HubOptions): Server {
     const route = `${method} /${parts.slice(1).join('/')}`;
     const id = parts[2] ?? '';
 
-    if (route === 'GET /health') return send(res, 200, { ok: true, version: HUB_API_VERSION });
+    if (route === 'GET /health') {
+      try {
+        await store.ping();
+      } catch {
+        throw new HttpError(503, 'The hub database is unavailable.');
+      }
+      return send(res, 200, { ok: true, version: HUB_API_VERSION });
+    }
 
     if (route === 'POST /auth/register') {
       const body = await readJson(req);
@@ -204,125 +211,94 @@ export function createHub(opts: HubOptions): Server {
       const password = str(body, 'password');
       if (!LIMITS.handle.test(handle)) throw new HttpError(400, 'Handles are 3-24 letters, numbers, dashes, or underscores.');
       if (password.length < LIMITS.passwordMin) throw new HttpError(400, `Passwords need at least ${LIMITS.passwordMin} characters.`);
-      if (store.findUserByHandle(handle)) throw new HttpError(409, 'That handle is taken.');
       const user: UserRecord = { id: newHubId('usr'), handle, passwordHash: await hashPassword(password), createdAt: Date.now() };
-      store.addUser(user);
-      return send(res, 201, openSession(user));
+      try {
+        await store.addUser(user);
+      } catch (e) {
+        if (e instanceof DuplicateHandleError) throw new HttpError(409, 'That handle is taken.');
+        throw e;
+      }
+      return send(res, 201, await openSession(user));
     }
 
     if (route === 'POST /auth/login') {
       const body = await readJson(req);
-      const user = store.findUserByHandle(str(body, 'handle').trim());
+      const user = await store.findUserByHandle(str(body, 'handle').trim());
       if (!user || !(await verifyPassword(str(body, 'password'), user.passwordHash))) {
         throw new HttpError(401, 'Wrong handle or password.');
       }
-      return send(res, 200, openSession(user));
+      return send(res, 200, await openSession(user));
     }
 
     if (route === 'POST /auth/logout') {
       const auth = req.headers.authorization ?? '';
-      if (auth.startsWith('Bearer ')) store.removeSession(sha256(auth.slice(7)));
+      if (auth.startsWith('Bearer ')) await store.removeSession(sha256(auth.slice(7)));
       return send(res, 200, { ok: true });
     }
 
-    if (route === 'GET /me') return send(res, 200, toUser(requireUser(req)));
+    if (route === 'GET /me') return send(res, 200, toUser(await requireUser(req)));
 
     if (route === 'GET /content') {
-      const me = viewer(req);
+      const me = await viewer(req);
       const kind = url.searchParams.get('kind') as BundleKind | null;
-      const q = (url.searchParams.get('q') ?? '').trim().toLowerCase().slice(0, 80);
-      const sort = (url.searchParams.get('sort') ?? 'new') as SortOrder;
-      const author = url.searchParams.get('author');
+      const sort = url.searchParams.get('sort') as SortOrder | null;
       const page = Math.max(1, Math.min(1000, Number(url.searchParams.get('page')) || 1));
-      let items = store.allContent().filter((c) => c.reportedBy.length < LIMITS.reportsToHide || c.authorId === me?.id);
-      if (kind && KINDS.includes(kind)) items = items.filter((c) => c.kind === kind);
-      if (author) items = items.filter((c) => c.authorId === author);
-      if (q) {
-        items = items.filter((c) => {
-          const handle = store.getUser(c.authorId)?.handle ?? '';
-          const hay = [c.name, c.description, handle, ...c.tags, ...c.preview.characters.map((x) => x.alias)].join(' ').toLowerCase();
-          return hay.includes(q);
-        });
-      }
-      const score = (c: ContentRecord) => (sort === 'top' ? c.likedBy.length * 3 + c.downloads : sort === 'downloads' ? c.downloads : c.createdAt);
-      items = [...items].sort((a, b) => score(b) - score(a) || b.createdAt - a.createdAt);
-      const start = (page - 1) * LIMITS.pageSize;
-      const body: ListResponse = {
-        items: items.slice(start, start + LIMITS.pageSize).map((c) => summarize(c, me?.id ?? null)),
+      const { records, total } = await store.listContent({
+        kind: kind && KINDS.includes(kind) ? kind : undefined,
+        q: (url.searchParams.get('q') ?? '').trim().toLowerCase().slice(0, 80) || undefined,
+        sort: sort && SORTS.includes(sort) ? sort : 'new',
+        authorId: url.searchParams.get('author') || undefined,
         page,
         pageSize: LIMITS.pageSize,
-        total: items.length,
-      };
+        viewerId: me?.id ?? null,
+        hideAtReports: LIMITS.reportsToHide,
+      });
+      const body: ListResponse = { items: records.map(summarize), page, pageSize: LIMITS.pageSize, total };
       return send(res, 200, body);
     }
 
     if (route === 'POST /content') {
-      const user = requireUser(req);
-      const { bundle, description, tags } = validatePublish(await readJson(req));
-      const now = Date.now();
-      const record: ContentRecord = {
-        id: newHubId('hub'),
-        kind: bundle.kind,
-        name: bundle.name || bundle.payload.name,
-        description,
-        tags,
-        authorId: user.id,
-        version: 1,
-        downloads: 0,
-        likedBy: [],
-        reportedBy: [],
-        preview: previewBundle(bundle),
-        createdAt: now,
-        updatedAt: now,
-      };
-      bundle.author = user.handle;
-      store.saveContent(record, bundle);
-      return send(res, 201, summarize(record, user.id));
+      const user = await requireUser(req);
+      const { bundle, fields } = validatePublish(await readJson(req), user);
+      const contentId = newHubId('hub');
+      await store.createContent({ ...fields, id: contentId, kind: bundle.kind, authorId: user.id, createdAt: Date.now() }, bundle);
+      return send(res, 201, summarize((await store.getContent(contentId, user.id))!));
     }
 
     if (parts[1] === 'content' && id) {
       const action = parts[3] ?? '';
       if (method === 'GET' && !action) {
-        const c = store.getContent(id);
-        const bundle = c && store.getBundle(id);
+        const c = await store.getContent(id, (await viewer(req))?.id ?? null);
+        const bundle = c && (await store.getBundle(id));
         if (!c || !bundle) throw new HttpError(404, 'Not found.');
-        const detail: ContentDetail = { ...summarize(c, viewer(req)?.id ?? null), bundle };
+        const detail: ContentDetail = { ...summarize(c), bundle };
         return send(res, 200, detail);
       }
       if (method === 'PUT' && !action) {
-        const { user, c } = ownContent(req, id);
-        const { bundle, description, tags } = validatePublish(await readJson(req));
+        const { user, c } = await ownContent(req, id);
+        const { bundle, fields } = validatePublish(await readJson(req), user);
         if (bundle.kind !== c.kind) throw new HttpError(400, `This listing holds a ${c.kind}; publish a ${bundle.kind} as a new listing.`);
-        bundle.author = user.handle;
-        Object.assign(c, { name: bundle.name || c.name, description, tags, version: c.version + 1, preview: previewBundle(bundle), updatedAt: Date.now() });
-        store.saveContent(c, bundle);
-        return send(res, 200, summarize(c, user.id));
+        await store.updateContent(id, fields, bundle, Date.now());
+        return send(res, 200, summarize((await store.getContent(id, user.id))!));
       }
       if (method === 'DELETE' && !action) {
-        ownContent(req, id);
-        store.removeContent(id);
+        await ownContent(req, id);
+        await store.removeContent(id);
         return send(res, 200, { ok: true });
       }
-      const c = store.getContent(id);
+      const me = await viewer(req);
+      const c = await store.getContent(id, me?.id ?? null);
       if (!c) throw new HttpError(404, 'Not found.');
       if (method === 'POST' && action === 'download') {
-        c.downloads++;
-        store.saveContent(c);
-        return send(res, 200, { downloads: c.downloads });
+        return send(res, 200, { downloads: await store.incrementDownloads(id) });
       }
       if (method === 'POST' && action === 'like') {
-        const user = requireUser(req);
-        const liked = !c.likedBy.includes(user.id);
-        c.likedBy = liked ? [...c.likedBy, user.id] : c.likedBy.filter((x) => x !== user.id);
-        store.saveContent(c);
-        return send(res, 200, { liked, likes: c.likedBy.length });
+        const user = await requireUser(req);
+        return send(res, 200, await store.toggleLike(id, user.id));
       }
       if (method === 'POST' && action === 'report') {
-        const user = requireUser(req);
-        if (user.id !== c.authorId && !c.reportedBy.includes(user.id)) {
-          c.reportedBy.push(user.id);
-          store.saveContent(c);
-        }
+        const user = await requireUser(req);
+        if (user.id !== c.authorId) await store.addReport(id, user.id);
         return send(res, 200, { ok: true });
       }
     }

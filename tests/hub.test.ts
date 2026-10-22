@@ -1,5 +1,7 @@
 // End-to-end tests of the Multiverse Hub: a real HTTP server on a random port,
-// driven through the same HubClient the game uses.
+// driven through the same HubClient the game uses. The suite runs against the
+// file store, and also against PostgreSQL when HUB_TEST_DATABASE_URL points at
+// a disposable database (its tables are dropped first).
 
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import type { AddressInfo } from 'node:net';
@@ -10,11 +12,34 @@ import { generateUniverse } from '../src/core/generator';
 import { bundleCharacter, bundleUniverse, mergeBundle } from '../src/core/share';
 import { emptyUniverse } from '../src/core/generator';
 import { HubClient, HubError } from '../src/online/client';
+import pg from 'pg';
 import { createHub } from '../server/app';
-import { FileHubStore } from '../server/store';
+import { PgHubStore } from '../server/pg-store';
+import { FileHubStore, type HubStore } from '../server/store';
 
+interface Backend {
+  name: string;
+  open(dir: string): Promise<HubStore>;
+}
+
+const PG_URL = process.env.HUB_TEST_DATABASE_URL;
+
+async function resetPg(url: string) {
+  const c = new pg.Client({ connectionString: url });
+  await c.connect();
+  await c.query('DROP TABLE IF EXISTS reports, likes, content, sessions, users, schema_migrations CASCADE');
+  await c.end();
+}
+
+const BACKENDS: Backend[] = [
+  { name: 'file store', open: async (dir) => new FileHubStore(join(dir, 'data')) },
+  ...(PG_URL ? [{ name: 'postgres', open: () => PgHubStore.connect(PG_URL) }] : []),
+];
+
+describe.each(BACKENDS)('hub on $name', (backend) => {
 let dir: string;
 let base: string;
+let store: HubStore;
 let close: () => Promise<void>;
 
 function client(token: { value: string | null } = { value: null }) {
@@ -42,7 +67,9 @@ beforeAll(async () => {
   mkdirSync(staticDir);
   writeFileSync(join(staticDir, 'index.html'), '<h1>game</h1>');
   writeFileSync(join(dir, 'secret.txt'), 'nope');
-  const server = createHub({ store: new FileHubStore(join(dir, 'data')), staticDir, rateLimit: 10_000 });
+  if (backend.name === 'postgres') await resetPg(PG_URL!);
+  store = await backend.open(dir);
+  const server = createHub({ store, staticDir, rateLimit: 10_000 });
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
   base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   close = () => new Promise((r) => server.close(() => r()));
@@ -50,6 +77,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await close();
+  await store.close();
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -142,9 +170,19 @@ describe('publishing and browsing', () => {
   });
 
   it('persists across restarts', async () => {
-    const store = new FileHubStore(join(dir, 'data'));
-    expect(store.findUserByHandle('architect')).toBeDefined();
-    expect(store.allContent().length).toBeGreaterThan(0);
+    const reopened = await backend.open(dir);
+    expect(await reopened.findUserByHandle('architect')).toBeDefined();
+    const { total } = await reopened.listContent({ sort: 'new', page: 1, pageSize: 10, viewerId: null, hideAtReports: 3 });
+    expect(total).toBeGreaterThan(0);
+    await reopened.close();
+  });
+
+  it('treats search text literally and pages results', async () => {
+    const c = await signedIn('Pager');
+    for (let i = 0; i < 3; i++) await c.publish({ bundle: bundleUniverse(generateUniverse(100 + i)), description: `paged batch 100%_${i}`, tags: [] });
+    expect((await c.list({ q: '100%_' })).total).toBe(3);
+    expect((await c.list({ q: '%' })).items.every((i) => i.description.includes('%'))).toBe(true);
+    expect((await c.list({ q: 'paged batch', page: 2 })).items).toHaveLength(0);
   });
 });
 
@@ -169,4 +207,5 @@ describe('server hardening', () => {
     await new Promise((r) => server.close(() => r(null)));
     expect(codes).toContain(429);
   });
+});
 });

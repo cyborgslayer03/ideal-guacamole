@@ -11,17 +11,25 @@
     "test": "vitest run",
     "hub": "tsx server/main.ts",
     "hub:dev": "tsx watch server/main.ts",
-    "start": "npm run build && STATIC_DIR=dist tsx server/main.ts"
+    "start": "npm run build:all && STATIC_DIR=dist npm run serve",
+    "build:server": "vite build --ssr server/main.ts --outDir dist-server --emptyOutDir",
+    "build:all": "npm run build && npm run build:server",
+    "serve": "node dist-server/main.js"
   },
   "dependencies": {
+    "pg": "^8.23.1",
     "three": "0.186.1"
   },
   "devDependencies": {
     "@types/node": "^22.20.5",
+    "@types/pg": "^8.23.1",
     "@types/three": "0.186.0",
     "tsx": "^4.23.15",
     "typescript": "5.9.3",
     "vite": "7.3.7",
     "vitest": "3.2.7"
+  },
+  "engines": {
+    "node": ">=22"
   }
 }
