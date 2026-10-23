@@ -1,0 +1,97 @@
+# Builds the Android app on GitHub's runners (which come with the Android SDK).
+#
+# Every run produces:
+#   - omniverse-forge-debug.apk: install it on a phone to test.
+#   - omniverse-forge-release.aab: upload it to Google Play. It's signed when the
+#     ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS and
+#     ANDROID_KEY_PASSWORD repository secrets are set (see docs/ANDROID.md).
+#
+# Set the repository variable HUB_URL (e.g. https://omniverse-forge.onrender.com/api)
+# so the app knows where your Multiverse Hub lives.
+name: Android build
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_name:
+        description: Version name shown on the Play Store (e.g. 1.0.1)
+        required: false
+        default: ''
+  push:
+    branches: [main, 'claude/**']
+    paths:
+      - 'src/**'
+      - 'public/**'
+      - 'android/**'
+      - 'index.html'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'capacitor.config.ts'
+      - 'vite.config.ts'
+      - '.github/workflows/android.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Build the game
+        run: npm ci && npm run build
+        env:
+          VITE_HUB_URL: ${{ vars.HUB_URL }}
+
+      - name: Copy the game into the Android project
+        run: npx cap sync android
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: gradle
+
+      - name: Prepare release signing
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.jks"
+            echo "ANDROID_KEYSTORE_PATH=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
+            echo "Release build will be signed."
+          else
+            echo "::warning::No signing key configured: the release bundle is unsigned and Google Play won't accept it. See docs/ANDROID.md."
+          fi
+
+      - name: Build APK and app bundle
+        working-directory: android
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          # Each Play upload needs a higher version code; the run number always grows.
+          ANDROID_VERSION_CODE: ${{ github.run_number }}
+          ANDROID_VERSION_NAME: ${{ inputs.version_name || format('1.0.{0}', github.run_number) }}
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon assembleDebug bundleRelease
+
+      - name: Collect outputs
+        run: |
+          mkdir -p out
+          cp android/app/build/outputs/apk/debug/app-debug.apk out/omniverse-forge-debug.apk
+          cp android/app/build/outputs/bundle/release/app-release.aab out/omniverse-forge-release.aab
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: omniverse-forge-android-${{ github.run_number }}
+          path: out/
+          retention-days: 30

@@ -1,0 +1,38 @@
+# Render Blueprint: the game + Multiverse Hub as one web service, backed by
+# Render PostgreSQL. In the Render dashboard choose New > Blueprint and select
+# this repository. See README "Deploying to Render".
+services:
+  - type: web
+    name: omniverse-forge
+    runtime: node
+    plan: free
+    region: oregon
+    buildCommand: npm ci && npm run build:all
+    startCommand: npm run serve
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: STATIC_DIR
+        value: dist
+      # Render's proxy sets X-Forwarded-For; rate limits use the real client IP.
+      - key: TRUST_PROXY
+        value: "1"
+      # The Android app's origin; lets it call the Hub API.
+      - key: CORS_ORIGIN
+        value: https://localhost
+      - key: DATABASE_URL
+        fromDatabase:
+          name: omniverse-hub-db
+          property: connectionString
+
+databases:
+  - name: omniverse-hub-db
+    # Free Render databases expire after a trial period. Switch to a paid plan
+    # (e.g. basic-256mb) before relying on it for real players.
+    plan: free
+    region: oregon
+    databaseName: omniverse_hub
+    user: omniverse
+    # Reachable only from services in this Render account (private network).
+    ipAllowList: []

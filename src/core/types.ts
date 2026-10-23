@@ -1,0 +1,269 @@
+// Core data model. Everything a player creates lives inside a Universe, which
+// is plain JSON so it can be saved, exported, and (later) shared online.
+
+export const SCHEMA_VERSION = 1;
+
+export const STAT_KEYS = ['strength', 'speed', 'durability', 'energy', 'intelligence', 'combat'] as const;
+export type StatKey = (typeof STAT_KEYS)[number];
+export type Stats = Record<StatKey, number>;
+
+export const ROLES = ['hero', 'villain', 'antihero', 'neutral'] as const;
+export type Role = (typeof ROLES)[number];
+
+export const ELEMENTS = [
+  'kinetic', 'energy', 'fire', 'ice', 'lightning', 'cosmic', 'shadow', 'psychic', 'nature', 'tech',
+] as const;
+export type Element = (typeof ELEMENTS)[number];
+
+export const POWER_KINDS = [
+  'blast', 'beam', 'nova', 'dash', 'shield', 'heal',
+  'optic', 'web', 'telekinesis', 'reality', 'mindcontrol', 'summon', 'drain', 'gravity', 'storm', 'timestop',
+  'phase', 'sonic', 'grow', 'stealth', 'stretch', 'regeneration',
+  'flight', 'teleport', 'superspeed', 'leap', 'swing', 'portal',
+] as const;
+export type PowerKind = (typeof POWER_KINDS)[number];
+
+/** Movement powers: used on the travel button (or passive), never on Q/E/R/F. */
+export const MOVEMENT_KINDS = ['flight', 'teleport', 'superspeed', 'leap', 'swing', 'portal'] as const;
+export type MovementKind = (typeof MOVEMENT_KINDS)[number];
+
+export function isMovement(kind: PowerKind): kind is MovementKind {
+  return (MOVEMENT_KINDS as readonly string[]).includes(kind);
+}
+
+/** Movement on the travel button (Super Speed is passive, so it isn't one). */
+export const TRAVEL_KINDS = ['flight', 'teleport', 'leap', 'swing', 'portal'] as const;
+
+export function isTravel(kind: PowerKind): boolean {
+  return (TRAVEL_KINDS as readonly string[]).includes(kind);
+}
+
+/** Whether a power goes on Q/E/R/F. Movement and passives (Healing Factor) don't. */
+export function takesSkillSlot(kind: PowerKind): boolean {
+  return !isMovement(kind) && kind !== 'regeneration';
+}
+
+export interface Power {
+  id: string;
+  name: string;
+  kind: PowerKind;
+  element: Element;
+  /** 1-10: how strong this power is. */
+  potency: number;
+  description: string;
+}
+
+export const BUILDS = ['slim', 'athletic', 'heavy'] as const;
+export type Build = (typeof BUILDS)[number];
+
+export const HEAD_STYLES = ['mask', 'helmet', 'cowl', 'visor', 'bare'] as const;
+export type HeadStyle = (typeof HEAD_STYLES)[number];
+
+export const EMBLEMS = ['none', 'star', 'bolt', 'circle', 'diamond', 'triangle'] as const;
+export type Emblem = (typeof EMBLEMS)[number];
+
+/** Animation states an imported model can play. */
+export const MODEL_STATES = ['idle', 'walk', 'run', 'jump', 'fly', 'attack', 'cast', 'hurt', 'death'] as const;
+export type ModelState = (typeof MODEL_STATES)[number];
+
+/** An imported 3D model used instead of the procedural body. */
+export interface ModelRef {
+  /** "builtin:<key>", "asset:<id>" (a file stored in this browser), or an https URL. */
+  src: string;
+  /** Size multiplier applied after the model is fitted to the character's height. */
+  scale: number;
+  /** Turn the model (degrees) if it doesn't face forward. */
+  yaw: number;
+  /** Blend the costume colors into the model's materials. */
+  tint: boolean;
+  /**
+   * Per-state animation overrides. "clip:<name>" picks a clip inside the model;
+   * a source ("asset:<id>" or URL) uses the first clip of another file, such as
+   * a Mixamo animation downloaded without skin. Unset states are auto-detected.
+   */
+  clips: Partial<Record<ModelState, string>>;
+}
+
+export interface Appearance {
+  primary: string;
+  secondary: string;
+  accent: string;
+  build: Build;
+  /** Scale multiplier, 0.8-1.3. */
+  height: number;
+  head: HeadStyle;
+  emblem: Emblem;
+  cape: boolean;
+  aura: boolean;
+  /** Imported 3D model; null uses the procedural body built from the options above. */
+  model: ModelRef | null;
+}
+
+export interface Character {
+  id: string;
+  name: string;
+  alias: string;
+  role: Role;
+  factionId: string | null;
+  origin: string;
+  bio: string;
+  /** Each stat is 1-10. */
+  stats: Stats;
+  powers: Power[];
+  appearance: Appearance;
+  itemIds: string[];
+  level: number;
+  xp: number;
+  /** Mastery picks per power id: one entry per tier, 0 = not chosen, 1 or 2 = option. */
+  mastery: Record<string, number[]>;
+  /** Rank, 1-6 stars: each star adds health and damage (raised with biometrics). */
+  stars: number;
+}
+
+/** Mastery tiers per power (see core/progression.ts). */
+export const MASTERY_TIER_COUNT = 3;
+
+/** Gear perks: special effects on top of stat bonuses. */
+export const PERK_TYPES = ['powerDamage', 'powerCooldown', 'powerPotency', 'elementDamage', 'lifesteal', 'ultCharge'] as const;
+export type PerkType = (typeof PERK_TYPES)[number];
+
+export interface ItemPerk {
+  type: PerkType;
+  /** For power perks: which power type it boosts. */
+  power: PowerKind | null;
+  /** For element perks. */
+  element: Element | null;
+  /** Percent (cooldown, damage, lifesteal, ult charge) or potency points. */
+  value: number;
+}
+
+/** Highest upgrade level an item can reach. */
+export const MAX_ITEM_LEVEL = 5;
+
+export const ITEM_SLOTS = ['weapon', 'armor', 'artifact', 'gadget'] as const;
+export type ItemSlot = (typeof ITEM_SLOTS)[number];
+
+export const RARITIES = ['common', 'rare', 'epic', 'legendary', 'mythic'] as const;
+export type Rarity = (typeof RARITIES)[number];
+
+export interface Item {
+  id: string;
+  name: string;
+  slot: ItemSlot;
+  rarity: Rarity;
+  description: string;
+  bonuses: Partial<Stats>;
+  color: string;
+  /** Upgrade level, 0 to MAX_ITEM_LEVEL. Each level strengthens bonuses and the perk. */
+  level: number;
+  perk: ItemPerk | null;
+}
+
+export const BIOMES = ['metropolis', 'cosmic', 'mystic', 'wasteland', 'frozen', 'jungle', 'underworld'] as const;
+export type Biome = (typeof BIOMES)[number];
+
+export interface Location {
+  id: string;
+  name: string;
+  biome: Biome;
+  description: string;
+  skyColor: string;
+  groundColor: string;
+  glowColor: string;
+  /** 0-1: how crowded the arena is with structures. */
+  density: number;
+  /** Local laws: overrides of the universe rules that apply only here. */
+  rules: Partial<UniverseRules>;
+}
+
+export interface Faction {
+  id: string;
+  name: string;
+  color: string;
+  alignment: Role;
+  description: string;
+  /** Starting leader for campaigns; null lets the strongest member lead. */
+  leaderId: string | null;
+}
+
+export type Objective =
+  | { type: 'defeat'; count: number }
+  | { type: 'boss'; characterId: string }
+  | { type: 'survive'; seconds: number };
+
+export interface DialogueLine {
+  speaker: string;
+  text: string;
+}
+
+/** A chapter only plays if a story flag has a specific value. */
+export interface ChapterCondition {
+  flag: string;
+  value: string;
+}
+
+export interface ChoiceOption {
+  label: string;
+  /** Value written to the choice's flag when picked. */
+  value: string;
+  /** Optional character whose relationship with the player shifts. */
+  relationshipId: string | null;
+  relationshipDelta: number;
+}
+
+/** A decision shown after a chapter's outro; it sets a flag later chapters can require. */
+export interface StoryChoice {
+  prompt: string;
+  flag: string;
+  options: ChoiceOption[];
+}
+
+export interface Chapter {
+  id: string;
+  title: string;
+  locationId: string;
+  intro: DialogueLine[];
+  objective: Objective;
+  enemyFactionId: string | null;
+  enemyLevel: number;
+  outro: DialogueLine[];
+  rewardItemId: string | null;
+  requires: ChapterCondition | null;
+  choice: StoryChoice | null;
+}
+
+export interface Story {
+  id: string;
+  title: string;
+  synopsis: string;
+  protagonistId: string | null;
+  chapters: Chapter[];
+}
+
+export interface UniverseRules {
+  /** Multiplies all power damage, 0.5-3. */
+  powerScale: number;
+  /** Multiplies gravity, 0.2-2. */
+  gravity: number;
+  /** Multiplies enemy counts, 0.5-2. */
+  enemyDensity: number;
+}
+
+export interface Universe {
+  schema: number;
+  id: string;
+  name: string;
+  tagline: string;
+  description: string;
+  author: string;
+  seed: number;
+  accent: string;
+  rules: UniverseRules;
+  factions: Faction[];
+  characters: Character[];
+  items: Item[];
+  locations: Location[];
+  stories: Story[];
+  createdAt: number;
+  updatedAt: number;
+}
