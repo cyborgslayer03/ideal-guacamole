@@ -8,10 +8,11 @@ export type PatrolEvent =
   | { kind: 'rescue'; seconds: number }
   | { kind: 'elite'; bossId: string };
 
+/** `level` overrides the plan's enemy level for one phase (endless modes ramp it up). */
 export type Phase =
-  | { kind: 'defeat'; count: number; label?: string }
-  | { kind: 'survive'; seconds: number; label?: string }
-  | { kind: 'bosses'; bossIds: string[]; minions: boolean; label?: string }
+  | { kind: 'defeat'; count: number; label?: string; level?: number }
+  | { kind: 'survive'; seconds: number; label?: string; level?: number }
+  | { kind: 'bosses'; bossIds: string[]; minions: boolean; label?: string; level?: number; power?: number }
   | { kind: 'patrol'; events: PatrolEvent[]; label?: string };
 
 export interface MissionPlan {
@@ -80,6 +81,8 @@ export interface MissionResult {
   combos?: number;
   /** Run score (0-100) behind the grade. */
   score?: number;
+  /** Phases finished before the run ended (Danger Room waves). */
+  phasesCleared?: number;
 }
 
 export type Grade = 'S' | 'A' | 'B' | 'C';

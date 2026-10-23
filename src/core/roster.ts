@@ -288,6 +288,7 @@ export function legendCharacter(spec: LegendSpec, factionId: string | null = nul
     level: 1,
     xp: 0,
     mastery: {},
+    stars: 1,
   };
 }
 

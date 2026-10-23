@@ -4,7 +4,7 @@
 import * as THREE from 'three';
 import {
   ELEMENT_COLORS, basicDamage, leapSlamRadius, maxEnergy, maxHealth, moveSpeed, powerCooldown, powerCost, powerDamage,
-  portalLife, regenRate, rollDamage, energyRegen, speedMultiplier, teleportRange, travelRange,
+  portalLife, rankBonus, regenRate, rollDamage, energyRegen, speedMultiplier, teleportRange, travelRange,
 } from '../core/rules';
 import { EMPTY_LOADOUT, NO_MODS, boostedPower, type Loadout, type PowerMods } from '../core/progression';
 import { isTravel, takesSkillSlot, type Appearance, type Character, type Element, type Power, type Stats } from '../core/types';
@@ -161,7 +161,10 @@ export class Actor {
     model?: HeroModel,
   ) {
     this.model = model ?? createHeroModel(appearance);
-    this.maxHp = this.hp = healthOverride ?? maxHealth(stats, level);
+    // Star rank: every star adds health and damage.
+    const rank = rankBonus(character?.stars ?? 1);
+    this.maxHp = this.hp = Math.round((healthOverride ?? maxHealth(stats, level)) * rank.health);
+    this.damageMult = rank.damage;
     this.maxEnergy = this.energy = maxEnergy(stats);
     const sizeBonus = archetype === 'brute' ? 1.4 : archetype === 'boss' ? 1.25 : 1;
     this.model.root.scale.setScalar(sizeBonus);

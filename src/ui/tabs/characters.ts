@@ -66,6 +66,7 @@ export function blankCharacter(): Character {
     level: 1,
     xp: 0,
     mastery: {},
+    stars: 1,
   };
 }
 
@@ -210,6 +211,7 @@ function characterEditor(ctx: EditorContext, c: Character): HTMLElement {
     ),
     ...STAT_KEYS.map((k) => field(STAT_LABELS[k], slider(() => c.stats[k], (v) => ((c.stats[k] = v), changed()), 1, 10))),
     !ctx.quick && field('Level', slider(() => c.level, (v) => ((c.level = v), (c.xp = 0), changed()), 1, 60)),
+    !ctx.quick && field('Rank', slider(() => c.stars, (v) => ((c.stars = v), changed()), 1, 6, 1, (v) => '★'.repeat(v)), 'Each star adds 10% health and 8% damage. In a campaign, heroes rank up with biometrics.'),
   );
 
   const activeCount = c.powers.filter((p) => takesSkillSlot(p.kind)).length;

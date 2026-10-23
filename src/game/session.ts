@@ -11,7 +11,7 @@ import { randomLocation } from '../core/generator';
 import { gradeRun, parTime, type BossOption, type BossOutcome, type MissionPlan, type MissionResult, type PatrolEvent, type Phase } from '../core/missions';
 import { Rng } from '../core/rng';
 import {
-  ELEMENT_COLORS, RARITY_COLORS, THREAT_TIERS, travelRange, basicDamage, effectiveStats, grantXp, maxHealth, minionHealth, minionStats, resolveRules, tierById, xpReward,
+  ELEMENT_COLORS, RARITY_COLORS, THREAT_TIERS, rankBonus, travelRange, basicDamage, effectiveStats, grantXp, maxHealth, minionHealth, minionStats, resolveRules, tierById, xpReward,
   type RuleKey, type ThreatTier,
 } from '../core/rules';
 import type { Appearance, Character, Element, Location, Universe, UniverseRules } from '../core/types';
@@ -48,6 +48,10 @@ export interface SessionOptions {
   onExit: () => void;
   /** Relationship scores by character id (campaign), which set the tone of squad banter. */
   bonds?: Record<string, number>;
+  /** Free Roam: an open world with ambient events and no Omni controls. */
+  freeRoam?: boolean;
+  /** Sandbox and Free Roam: teammates who start alongside the hero. */
+  squadIds?: string[];
 }
 
 type Minion = 'grunt' | 'gunner' | 'brute';
@@ -186,7 +190,10 @@ export class GameSession {
     this.frame = requestAnimationFrame(this.loop);
 
     if (opts.plan) void this.runPlan(opts.plan);
-    else this.startSandbox(opts.sandboxLocationId ?? null);
+    else {
+      this.sandboxSquad = (opts.squadIds ?? []).filter((id) => id !== opts.characterId).slice(0, 3);
+      this.startSandbox(opts.sandboxLocationId ?? null);
+    }
   }
 
   // --- Setup ---------------------------------------------------------------
@@ -490,7 +497,7 @@ export class GameSession {
         if (!ch) return;
         const angle = (i - (phase.bossIds.length - 1) / 2) * 0.9;
         const at = new THREE.Vector3(s.player.pos.x + Math.sin(angle) * 16, 0, s.player.pos.z - Math.cos(angle) * 16);
-        const boss = this.spawnBoss(ch, r.plan.level, r.plan.bossPower[id] ?? 1, at);
+        const boss = this.spawnBoss(ch, phase.level ?? r.plan.level, phase.power ?? r.plan.bossPower[id] ?? 1, at);
         if (boss) r.bosses.push(boss);
       });
       this.refreshBossBar();
@@ -542,7 +549,7 @@ export class GameSession {
     if (!r || !s || r.done || r.transitioning || r.phase < 0) return;
     const phase = r.plan.phases[r.phase];
     const density = this.rules.enemyDensity;
-    const level = r.plan.level;
+    const level = phase.kind === 'patrol' ? r.plan.level : phase.level ?? r.plan.level;
     const factionId = r.plan.factionId;
     const alive = s.combat.actors.filter((a) => isFoe(a) && a.alive && a.archetype !== 'boss').length;
     r.elapsed += dt;
@@ -754,7 +761,7 @@ export class GameSession {
     this.opts.onSave();
 
     const squadIds = [s.player, ...s.allies].map((a) => a.character?.id).filter((id): id is string => !!id && id !== this.character.id);
-    const result: MissionResult = { victory: true, defeatedBossIds: r.defeated, survivingBossIds: [], outcomes, choice, ambient, grade: graded.grade, squadIds, combos: r.combos, score: graded.score };
+    const result: MissionResult = { victory: true, defeatedBossIds: r.defeated, survivingBossIds: [], outcomes, choice, ambient, grade: graded.grade, squadIds, combos: r.combos, score: graded.score, phasesCleared: r.plan.phases.length };
     s.hud.modal(
       'Mission Complete',
       h('div', { class: 'rewards' },
@@ -908,7 +915,7 @@ export class GameSession {
         if (a === s.player) this.applyLevelUp();
         else {
           a.level = a.character!.level;
-          a.maxHp = maxHealth(a.stats, a.level);
+          a.maxHp = Math.round(maxHealth(a.stats, a.level) * rankBonus(a.character!.stars).health);
           a.hp = a.alive ? a.maxHp : a.hp;
         }
       }
@@ -917,7 +924,7 @@ export class GameSession {
   }
 
   private finishFailure(r: Run, surviving: string[]) {
-    this.opts.onFinish?.({ victory: false, defeatedBossIds: r.defeated, survivingBossIds: surviving, outcomes: {}, choice: null });
+    this.opts.onFinish?.({ victory: false, defeatedBossIds: r.defeated, survivingBossIds: surviving, outcomes: {}, choice: null, phasesCleared: Math.max(0, r.phase) });
     this.exit();
   }
 
@@ -927,7 +934,7 @@ export class GameSession {
     const p = s.player;
     const before = p.level;
     p.level = p.character?.level ?? this.character.level;
-    p.maxHp = maxHealth(p.stats, p.level);
+    p.maxHp = Math.round(maxHealth(p.stats, p.level) * rankBonus(p.character?.stars ?? 1).health);
     p.hp = p.maxHp;
     p.energy = p.maxEnergy;
     // New mastery tiers are chosen in the creator and apply from the next fight.
@@ -1061,6 +1068,15 @@ export class GameSession {
     const location = this.resolveLocation(locationId);
     this.buildStage(location, this.sandboxSquad);
     const s = this.stage!;
+    if (this.opts.freeRoam) {
+      // Free Roam: explore, help people, and take on whatever happens.
+      s.hud.banner(location.name, 'Free Roam · events appear as you explore', 2.6);
+      s.hud.setObjective(`Free Roam · ${location.name}`);
+      this.buildPortals(location);
+      this.ambientInSandbox = true;
+      this.startAmbient(null, null);
+      return;
+    }
     s.hud.banner(locationId ? `Entering ${location.name}` : 'Omni Sandbox', locationId ? `${this.tier.label} threat` : 'You are the One Above All', 2.4);
     s.hud.setObjective(`Free play · ${location.name}`);
     this.buildPortals(location);

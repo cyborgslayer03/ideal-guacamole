@@ -78,6 +78,29 @@ AI bosses, companions, and enemies use all of them, and only when they make sens
 
 Add any of them to any universe with **★ Legends** in the Characters tab. Every legend is fully editable once added.
 
+### A living world
+- **Civilians who belong there:**
+  - Humans fill city streets, locals in parkas the frozen peaks, scavengers the wastelands, and villagers the jungle.
+  - Big-headed aliens with glowing antennae walk the space stations, horned demons with tails roam the Underworld, and floating robed spirits drift through the mystic realms.
+  - They wander and step aside for the hero. They **flee and scream** when enemies come near, **cower** from explosions, **cheer** once you've made it safe, and sneak **photos** of their favorite heroes.
+  - Patrol rescues now have real hostages, who cheer when freed.
+- **Traffic:** cars drive the city's ring road, past street lights. They brake and honk when a fight (or a hero) blocks the road, and speed away from danger.
+- **Skies:** shuttles fly over space stations, drones over the city, birds over jungles and ice, and red-eyed bats circle the Underworld.
+- **Weather in every biome:** city rain, snowfall, rising embers, wasteland dust, glowing spores, and star dust.
+- **The Underworld:** a new biome of obsidian spires, bone arches and **lava pools** that burn anyone standing in them. Knock enemies in.
+- Arenas are larger (75 m across, up from 55 m) with more to explore.
+
+### Free Roam and the Danger Room
+- **Free Roam** (War Table): an open world with your squad, random events, civilians and traffic, and portals to every other location. No Omni controls, just the world.
+- **Danger Room** (War Table): endless escalating waves, with a villain from your universe every fifth wave. It pays out shards and biometrics by waves cleared and keeps your best wave.
+
+### Character ranks
+Every character has a **rank of 1 to 6 stars**. Each star adds 10% health and 8% damage. Ranks are raised with **🧬 biometrics**, which are specific to each character:
+- The mission's hero earns 4 (6 for an S grade), each teammate 2, and each defeated boss 3, toward ranking them up once they're recruited.
+- The Danger Room pays biometrics for every wave cleared.
+
+Rank up from the panel under the hero select on the War Table. In the creator, Full detail lets you set ranks directly.
+
 ### Destructible scenery
 Arenas are scattered with cars, crates and fuel barrels. Any attack or explosion can smash them, and barrels explode on whoever was nearby. **Telekinesis** picks up the nearest prop and hurls it at the target instead of lifting the enemy. Nobody targets scenery on purpose, so it never distracts the AI.
 
@@ -143,9 +166,19 @@ The power card shows the numbers with mastery and gear applied, and the editor f
 - In the creator, the Items tab edits perks and upgrade levels directly.
 
 ### Sound and music
-All sound is synthesized live with WebAudio, so there are no audio files. Hits, crits, swings, dodges, jumps and every movement power have their own sounds. Each element has its own cast sound, and signature powers (time stop, sonic scream, storm strikes, web lines, summons, heals) have their own too. Sounds are panned to where they happen on screen and get quieter with distance.
+All sound is synthesized live with WebAudio, so there are no audio files.
+- **Impacts** are layered: a sharp transient, a saturated body, a sub-bass boom, and a crackling debris tail.
+- **Room sound:** everything goes through a room reverb tuned to the world (a huge hall in space, a cavern in the Underworld, a tight jungle), and big hits briefly duck the music so they land.
+- **Variety:** pitch varies slightly on every play, so repeated hits never sound robotic.
+- **Coverage:** each element has its own cast sound, and signature powers have their own too. There are also crowd screams and cheers (human, alien, demon or spirit voices), car horns, camera shutters, a riser and stinger for boss phases, and a victory fanfare.
+- **Ambience** for each biome: city hum with distant sirens, a deep space drone with station chirps, Underworld rumble with growls and crackles, jungle insects and birds, mountain wind, and mystic chimes.
+- **Music** shifts gears:
+  - Exploring: a pad and plucked arpeggio at 96 BPM.
+  - Combat: driving drums, pumping bass and distorted power chords at 128 BPM.
+  - Bosses: four-on-the-floor, tom fills, a lead and a choir at 140 BPM.
+  - Changes land on the bar with a drum fill and crash. Each world has its own key; the Underworld is Phrygian and dark.
 
-The generative music is an ambient pad while exploring, adds bass and drums when enemies are near, and adds an arpeggio lead for boss fights. Volume, music and effects levels are in Settings, and **M** mutes in game.
+Volume, music and effects levels are in Settings, and **M** mutes in game.
 
 ### 3D models (Mixamo, Quaternius, any glTF/FBX)
 Any character can swap the procedural body for a rigged 3D model in the **3D model** section of the Characters tab:

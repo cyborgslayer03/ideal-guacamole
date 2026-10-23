@@ -27,6 +27,10 @@ export interface EditorContext {
   playStory(storyId: string, chapter: number, characterId: string): void;
   /** Launch a campaign mission with up to three AI teammates. */
   playMission(mission: Mission, heroId: string, squadIds: string[]): void;
+  /** Endless waves; rewards and the best record go to the campaign. */
+  playDangerRoom(heroId: string, squadIds: string[]): void;
+  /** Open-world exploration with ambient events. */
+  playFreeRoam(heroId: string, squadIds: string[], locationId: string | null): void;
   exportBundle(bundle: Bundle | null): void;
   /** Share to the Multiverse Hub (signs in first if needed). */
   publishBundle(bundle: Bundle | null): void;

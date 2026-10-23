@@ -213,6 +213,13 @@ export function salvageValue(item: Item): number {
   return SALVAGE[item.rarity] + Math.floor(spent / 2);
 }
 
+// --- Ranks (stars and biometrics) ----------------------------------------------------
+
+/** Biometrics needed to go from `stars` to `stars + 1`, or null at the top rank. */
+export function rankUpCost(stars: number): number | null {
+  return [0, 10, 25, 50, 90, 150][stars] ?? null;
+}
+
 // --- Loadout (what combat needs) -------------------------------------------------------
 
 export interface PowerMods {

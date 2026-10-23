@@ -108,6 +108,15 @@ const KIND_DAMAGE: Record<PowerKind, number> = {
   regeneration: 0,
 };
 
+/** Highest character rank. */
+export const MAX_STARS = 6;
+
+/** What each star of rank adds: health and damage multipliers. */
+export function rankBonus(stars: number): { health: number; damage: number } {
+  const s = clamp(Math.floor(stars), 1, MAX_STARS) - 1;
+  return { health: 1 + s * 0.1, damage: 1 + s * 0.08 };
+}
+
 export function powerDamage(power: Power, stats: Stats, level: number, powerScale = 1): number {
   const base = power.potency * 8 + stats.energy * 3 + level * 3;
   return Math.round(base * KIND_DAMAGE[power.kind] * powerScale);
@@ -326,7 +335,8 @@ export function combatPower(character: Character, items: readonly Item[]): numbe
     const item = items.find((i) => i.id === id);
     return item ? sum + RARITY_WEIGHT[item.rarity] : sum;
   }, 0);
-  return Math.round((statSum * 120 + powerSum * 90 + gear * 150) * (1 + (character.level - 1) * 0.08));
+  const rank = rankBonus(character.stars);
+  return Math.round((statSum * 120 + powerSum * 90 + gear * 150) * (1 + (character.level - 1) * 0.08) * (rank.health + rank.damage) / 2);
 }
 
 /** Stats for a generic enemy minion of a given level and archetype. */

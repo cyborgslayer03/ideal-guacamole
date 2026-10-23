@@ -116,6 +116,8 @@ export interface Character {
   xp: number;
   /** Mastery picks per power id: one entry per tier, 0 = not chosen, 1 or 2 = option. */
   mastery: Record<string, number[]>;
+  /** Rank, 1-6 stars: each star adds health and damage (raised with biometrics). */
+  stars: number;
 }
 
 /** Mastery tiers per power (see core/progression.ts). */

@@ -11,8 +11,8 @@ import { randomCharacter } from './generator';
 import type { BossOption, BossOutcome, MissionPlan, MissionResult, PatrolEvent, Phase } from './missions';
 import { chapterPhase, nextChapterIndex } from './missions';
 import { Rng } from './rng';
-import { rollLoot, rollRarity, salvageValue, upgradeCost } from './progression';
-import { MAX_LEVEL, clamp, combatPower, grantXp } from './rules';
+import { rankUpCost, rollLoot, rollRarity, salvageValue, upgradeCost } from './progression';
+import { MAX_LEVEL, MAX_STARS, clamp, combatPower, grantXp } from './rules';
 import type { Character, DialogueLine, Faction, Item, Universe } from './types';
 
 export const CAMPAIGN_SCHEMA = 1;
@@ -76,6 +76,10 @@ export interface Campaign {
   shards: number;
   /** Villain plots counting down on the War Table. */
   schemes: Scheme[];
+  /** Character-specific rank-up material, by character id. */
+  biometrics: Record<string, number>;
+  /** Best Danger Room wave reached. */
+  dangerBest: number;
 }
 
 export type SchemeKind = 'doomsday' | 'jailbreak' | 'takeover' | 'army';
@@ -163,6 +167,8 @@ export function createCampaign(u: Universe): Campaign {
     contractsDone: [],
     shards: 0,
     schemes: [],
+    biometrics: {},
+    dangerBest: 0,
   };
   syncCampaign(c, u);
   return c;
@@ -227,6 +233,9 @@ export function loadCampaign(raw: unknown, u: Universe): Campaign {
     contractsDone: Array.isArray(o.contractsDone) ? o.contractsDone.filter((x): x is string => typeof x === 'string').slice(-200) : [],
     shards: typeof o.shards === 'number' && Number.isFinite(o.shards) ? clamp(Math.floor(o.shards), 0, 1e7) : 0,
     schemes: Array.isArray(o.schemes) ? o.schemes.filter(validScheme).slice(0, 4).map((x) => ({ ...x })) : [],
+    biometrics: Object.fromEntries(Object.entries(typeof o.biometrics === 'object' && o.biometrics ? o.biometrics : {})
+      .filter(([, v]) => typeof v === 'number' && Number.isFinite(v)).map(([k, v]) => [k, clamp(Math.floor(v as number), 0, 1e6)])),
+    dangerBest: typeof o.dangerBest === 'number' && Number.isFinite(o.dangerBest) ? clamp(Math.floor(o.dangerBest), 0, 9999) : 0,
   };
   for (const [id, r] of Object.entries(o.relations as Record<string, Relationship>)) {
     if (!r || typeof r !== 'object') continue;
@@ -956,6 +965,7 @@ export function resolveMission(c: Campaign, u: Universe, m: Mission, result: Mis
     for (const f of hostileFactions(c, u)) if (f.s.power >= 70) f.s.power = clamp(f.s.power + 3, 0, 100);
   }
 
+  awardBiometrics(c, u, news, heroId, result.victory ? (result.grade === 'S' ? 6 : 4) : 1, result.victory ? result.squadIds ?? [] : [], result.victory ? result.defeatedBossIds : []);
   if (result.victory) {
     completeContracts(c, u, m, result, hero, news);
     for (const item of dropLoot(rng, m, result, hero)) {
@@ -966,6 +976,45 @@ export function resolveMission(c: Campaign, u: Universe, m: Mission, result: Mis
   // Teammates who fought alongside you grow closer.
   if (result.victory) for (const id of result.squadIds ?? []) if (id !== heroId) shiftScore(c, u, news, id, 3);
   advanceWorld(c, u, rng, news);
+  c.news = [...news.items].reverse().concat(c.news).slice(0, MAX_NEWS);
+  return news.items;
+}
+
+// --- Ranks and biometrics -----------------------------------------------------------
+
+/** Biometrics for whoever fought (and for the bosses beaten, toward recruiting and ranking them later). */
+function awardBiometrics(c: Campaign, u: Universe, news: Chronicle | null, heroId: string, heroAmount: number, squadIds: string[], bossIds: string[]) {
+  const add = (id: string, n: number) => {
+    if (n > 0 && u.characters.some((x) => x.id === id)) c.biometrics[id] = (c.biometrics[id] ?? 0) + n;
+  };
+  add(heroId, heroAmount);
+  for (const id of squadIds) if (id !== heroId) add(id, 2);
+  for (const id of bossIds) add(id, 3);
+  const hero = u.characters.find((x) => x.id === heroId);
+  if (news && hero && heroAmount > 0) news.add('loot', `🧬 +${heroAmount} ${hero.alias} biometrics${squadIds.length ? `, +2 for each teammate` : ''}.`);
+}
+
+/** Spends biometrics to raise a character one star. Returns false if it can't. */
+export function rankUp(c: Campaign, u: Universe, charId: string): boolean {
+  const ch = u.characters.find((x) => x.id === charId);
+  const cost = ch ? rankUpCost(ch.stars) : null;
+  if (!ch || cost === null || ch.stars >= MAX_STARS || (c.biometrics[charId] ?? 0) < cost) return false;
+  c.biometrics[charId] -= cost;
+  ch.stars++;
+  return true;
+}
+
+/** Danger Room rewards: shards and biometrics scale with waves cleared; the best run is kept. */
+export function resolveDangerRoom(c: Campaign, u: Universe, heroId: string, squadIds: string[], waves: number): NewsItem[] {
+  const news = new Chronicle(c);
+  const hero = u.characters.find((x) => x.id === heroId);
+  const record = waves > c.dangerBest;
+  c.dangerBest = Math.max(c.dangerBest, waves);
+  const shards = waves * 6;
+  c.shards += shards;
+  news.add('mission', `${hero?.alias ?? 'Your hero'} survived ${waves} ${waves === 1 ? 'wave' : 'waves'} in the Danger Room${record ? ' (a new record!)' : ''}.`);
+  if (shards) news.add('loot', `◈ +${shards} shards.`);
+  awardBiometrics(c, u, news, heroId, Math.ceil(waves * 1.5), squadIds, []);
   c.news = [...news.items].reverse().concat(c.news).slice(0, MAX_NEWS);
   return news.items;
 }

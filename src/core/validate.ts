@@ -122,6 +122,7 @@ export function normalizeCharacter(raw: unknown, factionIds = new Set<string>(),
     level: int(o.level, 1, 1, 60),
     xp: int(o.xp, 0, 0, 1e9),
     mastery: normalizeMastery(o.mastery),
+    stars: int(o.stars, 1, 1, 6),
   };
 }
 

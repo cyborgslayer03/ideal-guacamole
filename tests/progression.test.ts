@@ -155,7 +155,7 @@ describe('mission loot', () => {
       const before = u.items.length;
       const news = resolveMission(c, u, m, { victory: true, defeatedBossIds: [], survivingBossIds: [], outcomes: {}, choice: null, grade: 'A' }, hero.id);
       const loot = u.items.slice(before);
-      return { loot, news: news.filter((n) => n.kind === 'loot') };
+      return { loot, news: news.filter((n) => n.kind === 'loot' && n.text.startsWith('Loot:')) };
     };
     const a = run();
     expect(a.loot.length).toBeGreaterThan(0);

@@ -654,3 +654,11 @@ input[type='password']:focus, input[type='search']:focus { outline: none; border
 .photo-caption { position: absolute; left: 24px; top: 24px; padding: 8px 16px; background: #ffe14a; color: #000; border: 3px solid #000; font-family: var(--font-display); font-weight: 800; font-size: clamp(1rem, 2.4vw, 1.8rem); text-transform: uppercase; pointer-events: none; z-index: 4; }
 .photo-halftone { position: absolute; inset: 0; pointer-events: none; z-index: 3; background-image: radial-gradient(rgba(0, 0, 0, 0.2) 22%, transparent 24%); background-size: 8px 8px; }
 .policy-frame { width: 100%; height: min(70vh, 640px); border: 0; background: #060914; }
+
+/* --- Ranks ------------------------------------------------------------------- */
+.roster-stars { color: var(--gold); font-size: 0.8rem; letter-spacing: 1px; }
+.rank-panel { display: grid; gap: 6px; padding: 10px 12px; margin: 8px 0; background: rgba(255, 194, 62, 0.05); border: 1px solid rgba(255, 194, 62, 0.25); }
+.rank-row { display: grid; grid-template-columns: minmax(90px, 1fr) auto auto minmax(60px, 120px) auto; gap: 8px; align-items: center; }
+.rank-bar { height: 6px; background: rgba(255, 255, 255, 0.08); }
+.rank-bar > div { height: 100%; background: linear-gradient(90deg, #3ee8ff, #ffc23e); }
+@media (max-width: 640px) { .rank-row { grid-template-columns: 1fr auto; } .rank-row .rank-bar { grid-column: 1 / -1; } }

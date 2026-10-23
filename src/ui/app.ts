@@ -7,7 +7,7 @@ import { randomSeed } from '../core/rng';
 import { BundleError, bundleUniverse, parseBundle, universeFromBundle, type Bundle } from '../core/share';
 import { UniverseLibrary, loadSettings, saveSettings, type KeyValueStore, type Settings, type UniverseSummary } from '../core/storage';
 import type { Universe } from '../core/types';
-import { bossOptions, planMission, resolveMission, type Mission, type NewsItem } from '../core/campaign';
+import { bossOptions, planMission, resolveDangerRoom, resolveMission, type Mission, type NewsItem } from '../core/campaign';
 import { nextChapterIndex, planChapter, type MissionPlan, type MissionResult } from '../core/missions';
 import { GameSession, type SessionOptions } from '../game/session';
 import type { EditorContext } from './context';
@@ -19,6 +19,7 @@ import { modelLibrary } from '../game/models';
 import { audio } from '../game/audio';
 import { isNative, setupBackButton } from '../native';
 import { dailyChallenge, dailyStreak, todayKey, type DailyRecord } from '../core/daily';
+import { dangerRoomPlan } from '../core/danger';
 import { getPreview } from './preview';
 import { charactersTab } from './tabs/characters';
 import { itemsTab } from './tabs/items';
@@ -429,6 +430,25 @@ export class App {
           },
         }, 'play');
       },
+      playDangerRoom: (heroId: string, squadIds: string[]) => {
+        flush();
+        const c = ctx.campaign;
+        const hero = universe.characters.find((x) => x.id === heroId);
+        this.startSession(universe, heroId, {
+          plan: dangerRoomPlan(universe, hero?.level ?? 1, squadIds),
+          onFinish: (r) => {
+            const news = resolveDangerRoom(c, universe, heroId, squadIds, r.phasesCleared ?? 0);
+            this.library.save(universe);
+            this.library.saveCampaign(c);
+            this.pendingReport = { title: 'Danger Room', victory: true, news };
+            return null;
+          },
+        }, 'play');
+      },
+      playFreeRoam: (heroId: string, squadIds: string[], locationId: string | null) => {
+        flush();
+        this.startSession(universe, heroId, { plan: null, sandboxLocationId: locationId, freeRoam: true, squadIds }, 'play');
+      },
       exportBundle: (b) => this.exportBundle(b),
       publishBundle: (b) => {
         flush();
@@ -489,7 +509,7 @@ export class App {
   private startSession(
     universe: Universe,
     characterId: string,
-    mission: Pick<SessionOptions, 'plan' | 'sandboxLocationId' | 'bossOptions' | 'onFinish'>,
+    mission: Pick<SessionOptions, 'plan' | 'sandboxLocationId' | 'bossOptions' | 'onFinish' | 'freeRoam' | 'squadIds'>,
     returnTab: string,
   ) {
     getPreview().stop();
@@ -511,7 +531,7 @@ export class App {
   private launch(
     universe: Universe,
     characterId: string,
-    mission: Pick<SessionOptions, 'plan' | 'sandboxLocationId' | 'bossOptions' | 'onFinish'>,
+    mission: Pick<SessionOptions, 'plan' | 'sandboxLocationId' | 'bossOptions' | 'onFinish' | 'freeRoam' | 'squadIds'>,
     returnTab: string,
   ) {
     clear(this.root);

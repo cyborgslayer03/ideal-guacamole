@@ -218,6 +218,7 @@ export function randomCharacter(rng: Rng, role: Role = rng.pick(['hero', 'hero',
     level: 1,
     xp: 0,
     mastery: {},
+    stars: 1,
   };
 }
 

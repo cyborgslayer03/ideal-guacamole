@@ -2,13 +2,14 @@
 // selection, faction hierarchies, relationships, and the world chronicle.
 
 import {
-  SCHEME_META, activeContracts, availableAllies, bond, factionOf, isHostile, missionSquad, missionBoard, passTime, playableHeroes, relationOf,
+  SCHEME_META, activeContracts, availableAllies, rankUp, bond, factionOf, isHostile, missionSquad, missionBoard, passTime, playableHeroes, relationOf,
   type Bond, type Mission, type MissionKind, type NewsItem,
 } from '../../core/campaign';
-import { RARITY_COLORS, combatPower, ELEMENT_COLORS } from '../../core/rules';
+import { MAX_STARS, RARITY_COLORS, combatPower, ELEMENT_COLORS } from '../../core/rules';
+import { rankUpCost } from '../../core/progression';
 import type { Character } from '../../core/types';
 import type { EditorContext } from '../context';
-import { h } from '../dom';
+import { h, toast } from '../dom';
 import { capitalize } from '../forms';
 import { armoryPanel } from '../armory';
 import { confirmDialog } from '../overlay';
@@ -94,6 +95,12 @@ export function playTab(ctx: EditorContext): HTMLElement {
           showReport('Time passes…', true, news);
         },
       }, '⏳ Pass time'),
+      h('button', { class: 'btn primary', title: 'Explore an open world with random events', onclick: () => hero && ctx.playFreeRoam(hero.id, picks, null) }, '🌍 Free Roam'),
+      h('button', {
+        class: 'btn',
+        title: 'Endless waves; a villain every fifth wave. Rewards shards and biometrics.',
+        onclick: () => hero && ctx.playDangerRoom(hero.id, picks),
+      }, `⚔ Danger Room${c.dangerBest ? ` (best: wave ${c.dangerBest})` : ''}`),
       h('button', { class: 'btn', onclick: () => hero && ctx.playSandbox(null, hero.id) }, 'Omni Sandbox'),
       !ctx.quick && h('button', {
         class: 'btn danger',
@@ -202,6 +209,7 @@ export function playTab(ctx: EditorContext): HTMLElement {
     header,
     h('h3', { class: 'panel-title' }, 'Choose your hero'),
     heroes.length ? roster : h('p', { class: 'warn' }, 'Every hero is imprisoned, fallen, or turned against you. Pass time, or reset the campaign.'),
+    hero && rankPanel(ctx, hero, picks),
     companionRow,
     h('h3', { class: 'panel-title' }, 'Contracts'),
     contracts,
@@ -224,6 +232,7 @@ function rosterCard(ctx: EditorContext, ch: Character, active: boolean, onClick:
   return h('button', { class: `roster-card${active ? ' active' : ''}`, style: `--c:${ch.appearance.primary}; --a:${ch.appearance.accent}`, onclick: onClick },
     h('div', { class: 'roster-emblem' }, ch.alias.slice(0, 1)),
     h('div', { class: 'roster-name' }, ch.alias),
+    h('div', { class: 'roster-stars' }, stars(ch.stars)),
     h('div', { class: 'roster-meta' }, `Lv ${ch.level} · ${capitalize(ch.role)}`, r?.state === 'recruited' ? ' · Recruit' : ''),
     h('div', { class: 'roster-cp' }, `CP ${combatPower(ch, u.items).toLocaleString()}`),
     h('div', { class: 'roster-powers' }, ...ch.powers.slice(0, 5).map((p) => h('i', { style: `background:${ELEMENT_COLORS[p.element]}`, title: p.name }))),
@@ -267,6 +276,43 @@ function missionCard(ctx: EditorContext, m: Mission, hero: Character | null, pic
     h('span', null, `+${m.xp} XP`),
     reward && h('span', { style: `color:${RARITY_COLORS[reward.rarity]}` }, reward.name),
   ),
+  );
+}
+
+function stars(n: number): string {
+  return '★'.repeat(n) + '☆'.repeat(MAX_STARS - n);
+}
+
+/** Rank up the chosen hero (and squadmates) with biometrics earned in missions. */
+function rankPanel(ctx: EditorContext, hero: Character, picks: string[]) {
+  const u = ctx.universe;
+  const c = ctx.campaign;
+  const row = (ch: Character) => {
+    const cost = rankUpCost(ch.stars);
+    const have = c.biometrics[ch.id] ?? 0;
+    const can = cost !== null && have >= cost;
+    return h('div', { class: 'rank-row' },
+      h('b', null, ch.alias),
+      h('span', { class: 'roster-stars' }, stars(ch.stars)),
+      h('span', { class: 'muted small' }, cost === null ? `🧬 ${have} · max rank` : `🧬 ${have} / ${cost}`),
+      cost !== null && h('div', { class: 'rank-bar' }, h('div', { style: `width:${Math.min(100, (have / cost) * 100)}%` })),
+      h('button', {
+        class: `btn small${can ? ' primary' : ''}`,
+        disabled: !can,
+        onclick: () => {
+          if (!rankUp(c, u, ch.id)) return;
+          ctx.saveCampaign();
+          ctx.changed();
+          toast(`${ch.alias} reached ${ch.stars}★! More health and damage.`);
+          ctx.rerender();
+        },
+      }, cost === null ? 'Max' : 'Rank up'),
+    );
+  };
+  const team = [hero, ...picks.map((id) => u.characters.find((x) => x.id === id)).filter((x): x is Character => !!x)];
+  return h('div', { class: 'rank-panel' },
+    h('div', { class: 'muted small' }, 'Ranks: each star adds 10% health and 8% damage. Earn 🧬 biometrics by fighting as (or alongside, or against) a character.'),
+    ...team.map(row),
   );
 }
 
