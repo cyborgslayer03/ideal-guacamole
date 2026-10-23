@@ -5,7 +5,7 @@
 import * as THREE from 'three';
 import { Rng } from '../core/rng';
 import type { Appearance, Biome, Stats } from '../core/types';
-import { ARENA_RADIUS, type Obstacle } from './arena';
+import { ARENA_RADIUS, type Hazard, type Obstacle } from './arena';
 import { Actor } from './combat';
 import type { AnimState, HeroModel } from './model';
 import { EMPTY_LOADOUT } from '../core/progression';
@@ -102,7 +102,7 @@ export function createProp(kind: PropKind, color = CAR_COLORS[0]): Actor {
 }
 
 /** Scatters props around an arena, away from buildings and the spawn point. Deterministic per seed. */
-export function scatterProps(seed: number, biome: Biome, obstacles: readonly Obstacle[], count = 12): Actor[] {
+export function scatterProps(seed: number, biome: Biome, obstacles: readonly Obstacle[], count = 12, hazards: readonly Hazard[] = [], road: { radius: number; width: number } | null = null): Actor[] {
   const rng = new Rng(seed);
   const props: Actor[] = [];
   const kinds: PropKind[] = biome === 'metropolis' ? ['car', 'car', 'crate', 'barrel'] : ['crate', 'crate', 'barrel'];
@@ -114,6 +114,8 @@ export function scatterProps(seed: number, biome: Biome, obstacles: readonly Obs
     const kind = rng.pick(kinds);
     const r = PROP_SIZE[kind].radius;
     if (obstacles.some((o) => Math.hypot(x - o.x, z - o.z) < o.r + r + 1.5)) continue;
+    if (hazards.some((h) => Math.hypot(x - h.x, z - h.z) < h.r + r + 1)) continue;
+    if (road && Math.abs(Math.hypot(x, z) - road.radius) < road.width / 2 + r + 0.5) continue;
     if (props.some((p) => Math.hypot(x - p.pos.x, z - p.pos.z) < p.radius + r + 1)) continue;
     const prop = createProp(kind, rng.pick(CAR_COLORS));
     prop.pos.set(x, 0, z);

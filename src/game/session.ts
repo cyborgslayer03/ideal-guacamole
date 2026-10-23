@@ -23,6 +23,8 @@ import { Actor, Combat } from './combat';
 import { audio, type Intensity, type Sfx } from './audio';
 import { BossDirector } from './bossphase';
 import { scatterProps } from './props';
+import { CrowdSim, CrowdView, speciesFor, type Species, type Threat } from './crowd';
+import { Traffic } from './traffic';
 import { banterLine, type BanterEvent } from '../core/banter';
 import { loadoutFor, masteryUnlocked } from '../core/progression';
 import { Effects } from './effects';
@@ -129,6 +131,11 @@ export class GameSession {
   /** Friendly characters fighting alongside for a while (ambient distress calls). */
   private helpers: Actor[] = [];
   private musicTimer = 0;
+  // The living world: civilians, traffic, and short-lived danger zones from explosions.
+  private crowd: CrowdSim | null = null;
+  private crowdView: CrowdView | null = null;
+  private traffic: Traffic | null = null;
+  private blasts: { pos: THREE.Vector3; ttl: number }[] = [];
   private aiming = false;
   /** Finisher camera: a slow orbit around the last blow. */
   private cine: { focus: THREE.Vector3; t: number; duration: number; yaw: number } | null = null;
@@ -212,8 +219,17 @@ export class GameSession {
     this.resolveStageRules(location);
     combat.powerScale = this.rules.powerScale;
     combat.gravityScale = this.rules.gravity;
+    combat.hazards = arena.hazards;
+    // People (or aliens, or demons) going about their day, and traffic.
+    this.crowd = new CrowdSim(arena.obstacles, arena.hazards);
+    this.crowd.spawn(Math.round(14 + location.density * 18), speciesFor(location.biome));
+    this.crowdView = new CrowdView(this.scene);
+    this.traffic = new Traffic(this.scene, location.biome, new Rng(u.seed ^ hashString(location.id) ^ 0x7aff1c), arena.road);
+    this.blasts = [];
+    audio().setEnvironment(location.biome);
+    audio().startAmbience(location.biome);
     // Smashable scenery: cars, crates, and fuel barrels.
-    for (const prop of scatterProps(u.seed ^ hashString(location.id) ^ 0x5eed, location.biome, arena.obstacles)) combat.add(prop);
+    for (const prop of scatterProps(u.seed ^ hashString(location.id) ^ 0x5eed, location.biome, arena.obstacles, 16, arena.hazards, arena.road)) combat.add(prop);
 
     const c = this.character;
     const player = new Actor(c.alias, 'player', 'hero', effectiveStats(c, u.items), c.level, c.appearance, c.powers, undefined, c, loadoutFor(c, u.items));
@@ -298,6 +314,7 @@ export class GameSession {
         st.hud.banner(`${boss.name} ${phase.subtitle}`, `${detail} · Watch for the warning circles!`, 2.2);
         st.hud.refreshBoss(boss);
         this.slowmo = Math.max(this.slowmo, 0.7);
+        audio().play('stinger');
         this.say('enrage');
       },
     });
@@ -329,6 +346,9 @@ export class GameSession {
     s.fx.clear();
     this.scene.remove(s.arena.group);
     s.arena.dispose();
+    this.crowdView?.dispose();
+    this.traffic?.dispose();
+    this.crowd = this.crowdView = this.traffic = null;
     s.hud.root.remove();
     this.stage = null;
   }
@@ -612,6 +632,8 @@ export class GameSession {
               s.combat.damage(e, 1e6, s.player, null);
             }
             s.hud.banner('Civilians Saved', '', 1.4);
+            this.crowd?.release(active.pos, 12);
+            audio().play('cheer', { voice: voiceOf(speciesFor(s.location.biome)) });
           }
           break;
         }
@@ -646,6 +668,8 @@ export class GameSession {
     const s = this.stage!;
     b.state = 'active';
     s.hud.banner(eventLabel(b.event, this.opts.universe), '', 1.6);
+    // Civilians trapped at the scene: they cower until the area is safe.
+    if (b.event.kind === 'rescue') this.crowd?.spawn(6, speciesFor(s.location.biome), b.pos, 4, 'cower');
     if (b.event.kind === 'squad') {
       for (let i = 0; i < Math.round(b.event.count * this.rules.enemyDensity); i++) {
         const e = this.spawnMinion(this.pickMinion(r.plan.level), r.plan.level, r.plan.factionId, b.pos);
@@ -680,7 +704,7 @@ export class GameSession {
       }
     }
     s.hud.banner('Mission Complete', r.plan.title, 2.4);
-    audio().play('banner');
+    audio().play('victory');
     await wait(2200);
     if (this.disposed || this.run !== r) return;
     this.paused = true;
@@ -1343,6 +1367,7 @@ export class GameSession {
       if (!this.run) this.checkPortals(s);
       s.combat.update(dt);
       s.bosses.update(dt);
+      this.updateWorld(s, dt);
       if (this.godMode) s.player.hp = s.player.maxHp;
       this.updateRun(dt);
       // Dead actors topple and sink.
@@ -1628,10 +1653,46 @@ export class GameSession {
   private playSound(name: Sfx, pos: THREE.Vector3, element?: Element) {
     const s = this.stage;
     if (!s) return;
+    if (name === 'explosion' || name === 'ultimate' || name === 'thunder' || name === 'smash') this.blasts.push({ pos: pos.clone(), ttl: 1.2 });
     const local = pos.clone().applyMatrix4(this.camera.matrixWorldInverse);
     const dist = pos.distanceTo(s.player.pos);
     const gain = Math.max(0.12, Math.min(1, 1.15 - dist / 40));
     audio().play(name, { element, pan: Math.max(-0.8, Math.min(0.8, local.x / Math.max(4, -local.z))), gain });
+  }
+
+  /** Civilians react to danger and to the hero; traffic brakes for fights and heroes in the road. */
+  private updateWorld(s: Stage, dt: number) {
+    if (!this.crowd) return;
+    this.blasts = this.blasts.filter((b) => (b.ttl -= dt) > 0);
+    const threats: Threat[] = [];
+    for (const a of s.combat.actors) {
+      if (!a.alive || a.homeTeam !== 'enemy' || a.archetype === 'prop') continue;
+      threats.push({ pos: a.pos, radius: a.archetype === 'boss' ? 20 : 12, power: 1 });
+    }
+    for (const b of this.blasts) threats.push({ pos: b.pos, radius: 9, power: 2 });
+    const hero = s.player.alive ? s.player.pos : null;
+    for (const e of this.crowd.update(dt, threats, hero)) {
+      const voice = voiceOf(e.species);
+      if (e.kind === 'photo') {
+        s.fx.flare(e.pos, '#ffffff', 0.5, 0.12);
+        this.playSound('photo', e.pos);
+      } else this.playCrowd(e.kind, e.pos, voice);
+    }
+    this.crowdView?.update(this.crowd, this.time);
+    if (this.traffic) {
+      const blockers = s.combat.actors.filter((a) => a.alive && a.archetype !== 'prop').map((a) => a.pos);
+      const danger = threats.map((t) => t.pos);
+      for (const e of this.traffic.update(dt, this.time, blockers, danger)) this.playSound('honk', e.pos);
+    }
+  }
+
+  private playCrowd(kind: 'scream' | 'cheer' | 'gasp', pos: THREE.Vector3, voice: ReturnType<typeof voiceOf>) {
+    const s = this.stage;
+    if (!s) return;
+    const dist = pos.distanceTo(s.player.pos);
+    if (dist > 45) return;
+    const local = pos.clone().applyMatrix4(this.camera.matrixWorldInverse);
+    audio().play(kind, { voice, gain: Math.max(0.15, 1 - dist / 45) * 0.8, pan: Math.max(-0.8, Math.min(0.8, local.x / Math.max(4, -local.z))) });
   }
 
   /** Music follows the action: calm when exploring, drums in a fight, a lead line for bosses. */
@@ -1729,3 +1790,8 @@ const PHOTO_FILTERS: Record<PhotoFilter, { label: string; css: string }> = {
   vintage: { label: 'Golden Age', css: 'sepia(0.65) contrast(1.1) saturate(0.85)' },
   cosmic: { label: 'Cosmic', css: 'hue-rotate(70deg) saturate(1.6) contrast(1.1)' },
 };
+
+/** Which synthesized voice a civilian species screams and cheers with. */
+function voiceOf(species: Species): 'human' | 'alien' | 'demon' | 'spirit' {
+  return species === 'alien' ? 'alien' : species === 'demon' ? 'demon' : species === 'spirit' ? 'spirit' : 'human';
+}

@@ -157,7 +157,7 @@ export interface Item {
   perk: ItemPerk | null;
 }
 
-export const BIOMES = ['metropolis', 'cosmic', 'mystic', 'wasteland', 'frozen', 'jungle'] as const;
+export const BIOMES = ['metropolis', 'cosmic', 'mystic', 'wasteland', 'frozen', 'jungle', 'underworld'] as const;
 export type Biome = (typeof BIOMES)[number];
 
 export interface Location {

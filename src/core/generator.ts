@@ -93,7 +93,7 @@ const ELEMENT_WORDS: Record<Element, string[]> = {
   tech: ['Nano', 'Cyber', 'Repulsor'],
 };
 
-const FACTION_A = ['Vanguard', 'Legion', 'Order', 'Syndicate', 'Alliance', 'Brotherhood', 'Cabal', 'Initiative', 'Collective', 'Hydra'];
+const FACTION_A = ['Vanguard', 'Legion', 'Order', 'Syndicate', 'Alliance', 'Brotherhood', 'Cabal', 'Initiative', 'Collective', 'Covenant'];
 const FACTION_B = ['of Dawn', 'of the Void', 'Prime', 'of Iron', 'of Stars', 'Rising', 'of Ruin', 'Eternal'];
 
 const LOCATION_NAMES: Record<Biome, string[]> = {
@@ -103,6 +103,7 @@ const LOCATION_NAMES: Record<Biome, string[]> = {
   wasteland: ['The Ashlands', 'Rustbelt Ruins', 'Crater Zero', 'The Scorched Mile'],
   frozen: ['Glacier Citadel', 'The White Expanse', 'Frostspire Peaks', 'Cryo Vault'],
   jungle: ['Savage Basin', 'The Emerald Maze', 'Primeval Hollow', 'Vine City'],
+  underworld: ['The Brimstone Pits', 'Infernal Depths', 'The Ninth Circle', 'Ashen Throne'],
 };
 const BIOME_PALETTE: Record<Biome, { sky: string; ground: string; glow: string }> = {
   metropolis: { sky: '#0a1030', ground: '#151a2e', glow: '#3ee8ff' },
@@ -111,6 +112,7 @@ const BIOME_PALETTE: Record<Biome, { sky: string; ground: string; glow: string }
   wasteland: { sky: '#2a1408', ground: '#3a2614', glow: '#ff6a1f' },
   frozen: { sky: '#0c1e30', ground: '#c8dcec', glow: '#8fd8ff' },
   jungle: { sky: '#081a10', ground: '#14301c', glow: '#4fff7a' },
+  underworld: { sky: '#1c0505', ground: '#2a0d0a', glow: '#ff4a1a' },
 };
 
 const ITEM_NAMES: Record<ItemSlot, string[]> = {
@@ -121,7 +123,7 @@ const ITEM_NAMES: Record<ItemSlot, string[]> = {
 };
 const ITEM_ADJ = ['Infinity', 'Eternal', 'Quantum', 'Dread', 'Celestial', 'Primal', 'Phantom', 'Titan', 'Arc', 'Starborn'];
 
-const STORY_TITLES = ['Crisis on Infinite Fronts', 'The Rising Dark', 'Secret Wars', 'Age of Ruin', 'Fractured Destiny', 'The Omega Protocol', 'Dawn of Legends'];
+const STORY_TITLES = ['Crisis on Infinite Fronts', 'The Rising Dark', 'Shadow Wars', 'Age of Ruin', 'Fractured Destiny', 'The Omega Protocol', 'Dawn of Legends'];
 
 export function randomAlias(rng: Rng): string {
   if (rng.chance(0.15)) return rng.pick(SOLO_ALIAS);

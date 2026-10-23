@@ -11,9 +11,9 @@ import {
 } from '../src/core/progression';
 import { Rng } from '../src/core/rng';
 import { effectiveStats, minionStats, upgradedBonus } from '../src/core/rules';
-import type { Character, Item, Power } from '../src/core/types';
+import { BIOMES, type Character, type Item, type Power } from '../src/core/types';
 import { normalizeItem, normalizeUniverse } from '../src/core/validate';
-import { AudioEngine, SFX, musicLayers } from '../src/game/audio';
+import { AudioEngine, ENVIRONMENTS, SFX, musicLayers, musicTempo, saturationCurve } from '../src/game/audio';
 import { Actor, Combat } from '../src/game/combat';
 import { Effects } from '../src/game/effects';
 
@@ -256,9 +256,20 @@ describe('audio', () => {
     expect(engine.played).toBe(0);
   });
 
-  it('layers music by intensity', () => {
-    expect(musicLayers(0)).toEqual({ pad: true, bass: false, drums: false, lead: false });
-    expect(musicLayers(1)).toMatchObject({ bass: true, drums: true, lead: false });
-    expect(musicLayers(2).lead).toBe(true);
+  it('layers music by intensity and speeds up for fights', () => {
+    expect(musicLayers(0)).toEqual({ pad: true, pluck: true, bass: false, drums: false, chords: false, lead: false, choir: false });
+    expect(musicLayers(1)).toMatchObject({ pluck: false, bass: true, drums: true, chords: true, lead: false });
+    expect(musicLayers(2)).toMatchObject({ lead: true, choir: true });
+    expect(musicTempo(0)).toBeLessThan(musicTempo(1));
+    expect(musicTempo(1)).toBeLessThan(musicTempo(2));
+  });
+
+  it('has a room sound for every world and a smooth saturation curve', () => {
+    for (const b of BIOMES) expect(ENVIRONMENTS[b].decay).toBeGreaterThan(0);
+    const curve = saturationCurve(4, 101);
+    expect(curve[0]).toBeCloseTo(-1);
+    expect(curve[100]).toBeCloseTo(1);
+    expect(curve[50]).toBeCloseTo(0);
+    for (let i = 1; i < 101; i++) expect(curve[i]).toBeGreaterThan(curve[i - 1]);
   });
 });

@@ -64,7 +64,10 @@ export function chips<T extends string>(options: readonly Option<T>[], get: () =
         return h('button', {
           type: 'button',
           class: `chip${value === get() ? ' active' : ''}`,
-          onclick: () => {
+          onclick: (e: Event) => {
+            // Chips sit inside a <label>: without this, a click that re-renders the editor
+            // is forwarded to the label's first chip, which snaps the choice back.
+            e.preventDefault();
             set(value);
             render();
           },

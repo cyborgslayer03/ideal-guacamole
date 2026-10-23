@@ -5,7 +5,11 @@ import * as THREE from 'three';
 import { Rng } from '../core/rng';
 import type { Location } from '../core/types';
 
-export const ARENA_RADIUS = 55;
+export const ARENA_RADIUS = 75;
+
+/** City arenas have a ring road for traffic at this radius. */
+export const ROAD_RADIUS = 46;
+export const ROAD_WIDTH = 7;
 
 /**
  * A vertical cylinder of solid space. Columns rise from the ground (bottom 0);
@@ -24,11 +28,23 @@ export interface Obstacle {
 /** Platforms thinner than this are one-way (no side collision). */
 export const THIN = 1.2;
 
+/** A ground area that hurts whoever stands in it (Underworld lava). */
+export interface Hazard {
+  x: number;
+  z: number;
+  r: number;
+  /** Damage per second, as a fraction of max health. */
+  dps: number;
+}
+
 export interface Arena {
   group: THREE.Group;
   obstacles: Obstacle[];
   /** Raised walkable spots (rooftops, ledges, the skydeck) for spawning. */
   perches: THREE.Vector3[];
+  hazards: Hazard[];
+  /** Ring road for traffic (cities only). */
+  road: { radius: number; width: number } | null;
   update(t: number): void;
   dispose(): void;
 }
@@ -201,9 +217,9 @@ export function buildArena(location: Location, seed: number): Arena {
   sun.castShadow = true;
   sun.shadow.mapSize.set(2048, 2048);
   const cam = sun.shadow.camera;
-  cam.left = cam.bottom = -60;
-  cam.right = cam.top = 60;
-  cam.far = 150;
+  cam.left = cam.bottom = -ARENA_RADIUS - 5;
+  cam.right = cam.top = ARENA_RADIUS + 5;
+  cam.far = 170;
   const rim = new THREE.DirectionalLight(glow, 1.4);
   rim.position.set(-30, 20, -40);
   group.add(hemi, sun, rim);
@@ -217,7 +233,7 @@ export function buildArena(location: Location, seed: number): Arena {
   ground.receiveShadow = true;
   group.add(ground);
 
-  const grid = new THREE.GridHelper(ARENA_RADIUS * 2, 44, glow, glow);
+  const grid = new THREE.GridHelper(ARENA_RADIUS * 2, 60, glow, glow);
   const gridMat = grid.material as THREE.Material;
   gridMat.transparent = true;
   gridMat.opacity = location.biome === 'frozen' ? 0.25 : 0.12;
@@ -234,23 +250,30 @@ export function buildArena(location: Location, seed: number): Arena {
   animated.push((t) => (ringMat.opacity = 0.18 + Math.sin(t * 1.5) * 0.06));
 
   // Biome structures. Kept out of the central spawn area.
-  const count = Math.round(10 + location.density * 30);
+  // The bigger arena gets proportionally more structures.
+  const count = Math.round((10 + location.density * 30) * 1.7);
+  const road = location.biome === 'metropolis' ? { radius: ROAD_RADIUS, width: ROAD_WIDTH } : null;
+  const hazards: Hazard[] = [];
   const placeObstacle = (minR: number, maxR: number, radius: number): { x: number; z: number } | null => {
     for (let attempt = 0; attempt < 20; attempt++) {
       const a = rng.float(0, Math.PI * 2);
       const d = rng.float(minR, maxR);
       const x = Math.cos(a) * d;
       const z = Math.sin(a) * d;
+      if (road && Math.abs(d - road.radius) < road.width / 2 + radius + 1.5) continue;
+      if (hazards.some((h) => Math.hypot(h.x - x, h.z - z) < h.r + radius + 2)) continue;
       if (obstacles.every((o) => Math.hypot(o.x - x, o.z - z) > o.r + radius + 3)) return { x, z };
     }
     return null;
   };
+  if (road) buildRoad(group, track, road.radius, road.width, animated);
 
   const structureMat = track(new THREE.MeshStandardMaterial({ color: new THREE.Color(location.groundColor).offsetHSL(0, 0, 0.08), roughness: 0.6, metalness: 0.4 }));
   const glowMat = track(new THREE.MeshStandardMaterial({ color: glow, emissive: glow, emissiveIntensity: 1.4 }));
 
   buildLevels(rng, obstacles, perches, group, structureMat, glowMat, track);
   buildOutcrops(rng, obstacles, perches, group, structureMat, glowMat, track, placeObstacle);
+  if (location.biome === 'underworld') buildLava(rng, group, track, hazards, obstacles, animated);
 
   // City blocks have flat roofs you can stand on; other biomes' shapes are too jagged.
   const flatRoofs = location.biome === 'metropolis';
@@ -271,27 +294,14 @@ export function buildArena(location: Location, seed: number): Arena {
     buildStructure(location, rng, r, structureMat, glowMat, track, group, { x: Math.cos(a) * d, z: Math.sin(a) * d }, animated, 2.2);
   }
 
-  // Ambient floating particles.
-  const particleCount = 400;
-  const positions = new Float32Array(particleCount * 3);
-  for (let i = 0; i < particleCount; i++) {
-    positions[i * 3] = rng.float(-ARENA_RADIUS, ARENA_RADIUS);
-    positions[i * 3 + 1] = rng.float(0.5, 25);
-    positions[i * 3 + 2] = rng.float(-ARENA_RADIUS, ARENA_RADIUS);
-  }
-  const pGeo = track(new THREE.BufferGeometry());
-  pGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-  const particles = new THREE.Points(pGeo, track(new THREE.PointsMaterial({ color: glow, size: 0.15, transparent: true, opacity: 0.7, blending: THREE.AdditiveBlending, depthWrite: false })));
-  group.add(particles);
-  animated.push((t) => {
-    particles.rotation.y = t * 0.01;
-    particles.position.y = Math.sin(t * 0.3) * 0.5;
-  });
+  buildWeather(location, rng, group, track, glow, animated);
 
   return {
     group,
     obstacles,
     perches,
+    hazards,
+    road,
     update: (t) => animated.forEach((f) => f(t)),
     dispose: () => disposables.forEach((d) => d.dispose()),
   };
@@ -359,6 +369,19 @@ function buildStructure(
       add(new THREE.ConeGeometry(r * 0.4, height * 0.6, 5), glowMat, height * 0.3).position.x = r * 0.6;
       break;
     }
+    case 'underworld': {
+      // Obsidian spires with molten veins, and the odd bone arch.
+      height = rng.float(5, 16) * scale;
+      const spire = add(new THREE.ConeGeometry(r, height, 6), mat, height / 2);
+      spire.rotation.y = rng.float(0, 3);
+      add(new THREE.ConeGeometry(r * 0.35, height * 0.75, 4), glowMat, height * 0.38).position.x = r * 0.45;
+      if (rng.chance(0.35)) {
+        const arch = add(new THREE.TorusGeometry(r * 1.4, r * 0.18, 6, 12, Math.PI), mat, 0);
+        arch.position.x = r * 1.6;
+        arch.rotation.y = Math.PI / 2;
+      }
+      break;
+    }
     case 'jungle': {
       height = rng.float(6, 14) * scale;
       add(new THREE.CylinderGeometry(r * 0.25, r * 0.35, height, 7), mat, height / 2);
@@ -368,4 +391,164 @@ function buildStructure(
   }
   group.add(g);
   return height;
+}
+
+/** A dark ring road with dashed lane lines (traffic drives on it). */
+function buildRoad(group: THREE.Group, track: <T extends { dispose(): void }>(x: T) => T, radius: number, width: number, animated: ((t: number) => void)[]) {
+  const asphalt = new THREE.Mesh(track(new THREE.RingGeometry(radius - width / 2, radius + width / 2, 96)),
+    track(new THREE.MeshStandardMaterial({ color: '#0d0f16', roughness: 0.9, metalness: 0.1 })));
+  asphalt.rotation.x = -Math.PI / 2;
+  asphalt.position.y = 0.03;
+  asphalt.receiveShadow = true;
+  group.add(asphalt);
+  const dashMat = track(new THREE.MeshBasicMaterial({ color: '#ffd23e' }));
+  const dashGeo = track(new THREE.PlaneGeometry(0.25, 1.8));
+  const dashes = 64;
+  for (let i = 0; i < dashes; i++) {
+    const a = (i / dashes) * Math.PI * 2;
+    const d = new THREE.Mesh(dashGeo, dashMat);
+    d.rotation.x = -Math.PI / 2;
+    d.rotation.z = -a;
+    d.position.set(Math.cos(a) * radius, 0.05, Math.sin(a) * radius);
+    group.add(d);
+  }
+  // Street lights along the outer edge.
+  const poleMat = track(new THREE.MeshStandardMaterial({ color: '#2a3040', metalness: 0.6, roughness: 0.4 }));
+  const lampMat = track(new THREE.MeshStandardMaterial({ color: '#fff2c0', emissive: '#ffe08a', emissiveIntensity: 1.6 }));
+  const pole = track(new THREE.CylinderGeometry(0.08, 0.1, 4.5, 6));
+  const lamp = track(new THREE.SphereGeometry(0.25, 8, 6));
+  for (let i = 0; i < 24; i++) {
+    const a = (i / 24) * Math.PI * 2 + 0.07;
+    const r = radius + width / 2 + 0.8;
+    const p = new THREE.Mesh(pole, poleMat);
+    p.position.set(Math.cos(a) * r, 2.25, Math.sin(a) * r);
+    const l = new THREE.Mesh(lamp, lampMat);
+    l.position.set(Math.cos(a) * r, 4.6, Math.sin(a) * r);
+    group.add(p, l);
+  }
+  void animated;
+}
+
+/** Glowing lava pools that scorch anyone standing in them. */
+function buildLava(rng: Rng, group: THREE.Group, track: <T extends { dispose(): void }>(x: T) => T, hazards: Hazard[], obstacles: readonly Obstacle[], animated: ((t: number) => void)[]) {
+  const mat = track(new THREE.MeshStandardMaterial({ color: '#ff5a1a', emissive: '#ff3a0a', emissiveIntensity: 1.8, roughness: 0.4 }));
+  const crust = track(new THREE.MeshStandardMaterial({ color: '#1a0805', roughness: 1 }));
+  const pools = rng.int(5, 8);
+  for (let i = 0; i < pools * 4 && hazards.length < pools; i++) {
+    const a = rng.float(0, Math.PI * 2);
+    const d = rng.float(16, ARENA_RADIUS - 10);
+    const r = rng.float(3, 6);
+    const x = Math.cos(a) * d;
+    const z = Math.sin(a) * d;
+    if (hazards.some((h) => Math.hypot(h.x - x, h.z - z) < h.r + r + 4)) continue;
+    if (obstacles.some((o) => Math.hypot(o.x - x, o.z - z) < o.r + r + 1.5)) continue;
+    const rim = new THREE.Mesh(track(new THREE.CircleGeometry(r + 0.8, 24)), crust);
+    rim.rotation.x = -Math.PI / 2;
+    rim.position.set(x, 0.035, z);
+    const pool = new THREE.Mesh(track(new THREE.CircleGeometry(r, 24)), mat);
+    pool.rotation.x = -Math.PI / 2;
+    pool.position.set(x, 0.05, z);
+    group.add(rim, pool);
+    hazards.push({ x, z, r, dps: 0.06 });
+  }
+  animated.push((t) => (mat.emissiveIntensity = 1.5 + Math.sin(t * 2.2) * 0.4));
+}
+
+type WeatherKind = 'rain' | 'snow' | 'embers' | 'dust' | 'spores' | 'stardust' | 'motes';
+
+function weatherFor(location: Location, rng: Rng): WeatherKind {
+  switch (location.biome) {
+    case 'metropolis': return rng.chance(0.5) ? 'rain' : 'motes';
+    case 'frozen': return 'snow';
+    case 'underworld': return 'embers';
+    case 'wasteland': return 'dust';
+    case 'jungle': return 'spores';
+    case 'cosmic': return 'stardust';
+    default: return 'motes';
+  }
+}
+
+/** Biome weather: rain streaks, snowfall, rising embers, drifting dust, fireflies, or star dust. */
+function buildWeather(location: Location, rng: Rng, group: THREE.Group, track: <T extends { dispose(): void }>(x: T) => T, glow: THREE.Color, animated: ((t: number) => void)[]) {
+  const kind = weatherFor(location, rng);
+  const span = ARENA_RADIUS * 0.9;
+  const top = 28;
+  const count = kind === 'rain' ? 1400 : kind === 'snow' ? 900 : 500;
+  const pos = new Float32Array(count * 3);
+  const speed = new Float32Array(count);
+  for (let i = 0; i < count; i++) {
+    pos[i * 3] = rng.float(-span, span);
+    pos[i * 3 + 1] = rng.float(0, top);
+    pos[i * 3 + 2] = rng.float(-span, span);
+    speed[i] = rng.float(0.6, 1.4);
+  }
+  const geo = track(new THREE.BufferGeometry());
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  const look: Record<WeatherKind, { color: THREE.ColorRepresentation; size: number; opacity: number; additive: boolean }> = {
+    rain: { color: '#9ab8e8', size: 0.12, opacity: 0.55, additive: false },
+    snow: { color: '#ffffff', size: 0.22, opacity: 0.9, additive: false },
+    embers: { color: '#ff7a2a', size: 0.2, opacity: 0.95, additive: true },
+    dust: { color: '#c8a070', size: 0.18, opacity: 0.45, additive: false },
+    spores: { color: '#b8ff6a', size: 0.18, opacity: 0.85, additive: true },
+    stardust: { color: '#d8c8ff', size: 0.14, opacity: 0.9, additive: true },
+    motes: { color: glow, size: 0.15, opacity: 0.7, additive: true },
+  };
+  const l = look[kind];
+  const points = new THREE.Points(geo, track(new THREE.PointsMaterial({
+    color: l.color, size: l.size, transparent: true, opacity: l.opacity, depthWrite: false,
+    blending: l.additive ? THREE.AdditiveBlending : THREE.NormalBlending,
+  })));
+  group.add(points);
+  // Rain also gets streaks: a second set of short vertical lines.
+  let streaks: THREE.LineSegments | null = null;
+  if (kind === 'rain') {
+    const lines = new Float32Array(count * 6);
+    const lg = track(new THREE.BufferGeometry());
+    lg.setAttribute('position', new THREE.BufferAttribute(lines, 3));
+    streaks = new THREE.LineSegments(lg, track(new THREE.LineBasicMaterial({ color: '#8aa8d8', transparent: true, opacity: 0.35 })));
+    group.add(streaks);
+  }
+  let last = 0;
+  animated.push((t) => {
+    const dt = Math.min(0.1, Math.max(0, t - last));
+    last = t;
+    for (let i = 0; i < count; i++) {
+      const k = i * 3;
+      const s = speed[i];
+      switch (kind) {
+        case 'rain': pos[k + 1] -= 28 * s * dt; break;
+        case 'snow':
+          pos[k + 1] -= 2.2 * s * dt;
+          pos[k] += Math.sin(t * 0.8 + i) * 0.6 * dt;
+          break;
+        case 'embers':
+          pos[k + 1] += 2.5 * s * dt;
+          pos[k] += Math.sin(t * 1.5 + i) * 0.8 * dt;
+          break;
+        case 'dust':
+          pos[k] += 4 * s * dt;
+          pos[k + 1] += Math.sin(t + i) * 0.3 * dt;
+          break;
+        default:
+          pos[k + 1] += Math.sin(t * 0.7 + i) * 0.4 * dt;
+          pos[k] += Math.cos(t * 0.5 + i * 1.3) * 0.3 * dt;
+      }
+      if (pos[k + 1] < 0) pos[k + 1] += top;
+      if (pos[k + 1] > top) pos[k + 1] -= top;
+      if (pos[k] > span) pos[k] -= span * 2;
+      if (pos[k] < -span) pos[k] += span * 2;
+    }
+    geo.attributes.position.needsUpdate = true;
+    if (streaks) {
+      const a = (streaks.geometry.attributes.position as THREE.BufferAttribute).array as Float32Array;
+      for (let i = 0; i < count; i++) {
+        a[i * 6] = a[i * 6 + 3] = pos[i * 3];
+        a[i * 6 + 1] = pos[i * 3 + 1];
+        a[i * 6 + 4] = pos[i * 3 + 1] + 0.7;
+        a[i * 6 + 2] = a[i * 6 + 5] = pos[i * 3 + 2];
+      }
+      streaks.geometry.attributes.position.needsUpdate = true;
+    }
+    if (kind === 'spores' || kind === 'stardust') (points.material as THREE.PointsMaterial).opacity = l.opacity * (0.75 + Math.sin(t * 3) * 0.25);
+  });
 }

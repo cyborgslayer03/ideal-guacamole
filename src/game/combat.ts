@@ -8,7 +8,7 @@ import {
 } from '../core/rules';
 import { EMPTY_LOADOUT, NO_MODS, boostedPower, type Loadout, type PowerMods } from '../core/progression';
 import { isTravel, takesSkillSlot, type Appearance, type Character, type Element, type Power, type Stats } from '../core/types';
-import { ARENA_RADIUS, THIN, floorAt, type Obstacle } from './arena';
+import { ARENA_RADIUS, THIN, floorAt, type Hazard, type Obstacle } from './arena';
 import type { Effects } from './effects';
 import { idleAnim, type AnimState, type HeroModel } from './model';
 import { createHeroModel } from './models';
@@ -298,6 +298,8 @@ export class Combat {
   private clock = 0;
   gravityScale = 1;
   powerScale = 1;
+  /** Lava and other ground hazards (knock enemies in!). */
+  hazards: Hazard[] = [];
   onDamage: (e: DamageEvent) => void = () => {};
   onKill: (target: Actor, killer: Actor | null) => void = () => {};
   /** Squad play: heroes go down (revivable) instead of dying outright. */
@@ -1311,7 +1313,7 @@ export class Combat {
   /** Scenery breaks apart; fuel barrels explode, hurting the smasher's enemies. */
   private smash(prop: Actor, source: Actor | null) {
     this.fx.burst(prop.center, '#c8b090', 26, 9, 0.18);
-    this.sound('explosion', prop.pos);
+    this.sound(prop.ai.explosive ? 'explosion' : 'smash', prop.pos);
     if (prop.ai.explosive) {
       this.fx.flare(prop.center, '#ff6a1f', 4, 0.5);
       this.fx.ring(prop.pos, '#ff6a1f', 5.5, 0.5);
@@ -1436,6 +1438,15 @@ export class Combat {
       a.hp -= a.burnDps * dt;
       if (a.hp <= 0) this.kill(a, null);
       if (a.burn <= 0) a.burnDps = 0;
+    }
+    if (a.alive && a.grounded && a.pos.y < 0.3 && a.archetype !== 'prop' && this.hazards.length) {
+      const lava = this.hazards.find((h) => Math.hypot(a.pos.x - h.x, a.pos.z - h.z) < h.r);
+      if (lava) {
+        a.hp -= a.maxHp * lava.dps * (a.archetype === 'boss' ? 0.3 : 1) * dt;
+        a.sinceHit = 0;
+        if (Math.random() < dt * 8) this.fx.burst(a.pos.clone().setY(0.3), '#ff6a1f', 3, 3, 0.12);
+        if (a.hp <= 0) this.kill(a, null);
+      }
     }
     if (a.regen > 0 && a.alive) {
       a.regen -= dt;
